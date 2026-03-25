@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "daran-proxy-stack"
+version = "0.1.0"
+description = "Modular VPS network management toolkit for MTProxy, WARP, and relay/cascade scenarios"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [
+  { name = "Daran" }
+]
+dependencies = [
+  "typer>=0.12,<1.0",
+  "rich>=13.7,<14.0",
+  "pydantic>=2.7,<3.0",
+  "PyYAML>=6.0,<7.0",
+  "qrcode>=7.4,<8.0",
+]
+
+[project.scripts]
+daran-net = "daran_proxy_stack.cli.main:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

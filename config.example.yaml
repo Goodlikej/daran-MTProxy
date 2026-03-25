@@ -1,0 +1,9 @@
+paths:
+  config_dir: /etc/daran-proxy-stack
+  state_dir: /var/lib/daran-proxy-stack
+  log_dir: /var/log/daran-proxy-stack
+
+warp:
+  socks_host: 127.0.0.1
+  socks_port: 40000
+  mode: proxy
