@@ -179,6 +179,13 @@ def install_warp_cli() -> WarpActionResult:
     if shutil.which("warp-cli"):
         return WarpActionResult(True, "WARP install", "warp-cli already installed")
 
+    if not _supported_install_os():
+        return WarpActionResult(
+            False,
+            "WARP install unsupported",
+            "automatic install currently supports Debian/Ubuntu only; install cloudflare-warp manually for this OS",
+        )
+
     cmd = (
         "set -e; "
         "curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg | "
@@ -223,6 +230,8 @@ def disconnect_warp(config: WarpConfig) -> WarpActionResult:
 
 def start_local_socks(config: WarpConfig) -> WarpActionResult:
     _ensure_runtime_dirs(config)
+    if config.socks_host != "127.0.0.1":
+        return WarpActionResult(False, "WARP SOCKS failed", "only 127.0.0.1 is supported for local SOCKS in current MVP")
     cloudflared_path = shutil.which("cloudflared")
     if not cloudflared_path:
         return WarpActionResult(False, "WARP SOCKS failed", "cloudflared not found")
