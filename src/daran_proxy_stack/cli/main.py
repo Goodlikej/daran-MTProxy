@@ -20,7 +20,19 @@ from daran_proxy_stack.modules.mtproxy import (
     save_generated_files,
     suggest_free_ports,
 )
-from daran_proxy_stack.modules.warp import collect_diagnostics, render_summary, render_xray_outbound
+from daran_proxy_stack.modules.warp import (
+    collect_diagnostics,
+    connect_warp,
+    disconnect_warp,
+    install_warp_cli,
+    render_backend_plan,
+    render_debug_json,
+    render_result_panel,
+    render_summary,
+    render_xray_outbound,
+    start_local_socks,
+    stop_local_socks,
+)
 
 app = typer.Typer(help="Daran network toolkit for MTProxy, WARP, and relay/cascade scenarios.")
 warp_app = typer.Typer(help="Manage Cloudflare WARP helper services.")
@@ -111,6 +123,48 @@ def warp_plan() -> None:
         title="WARP MVP plan",
         border_style="yellow",
     ))
+
+@warp_app.command("install")
+def warp_install() -> None:
+    console.print(render_result_panel(install_warp_cli()))
+
+
+@warp_app.command("connect")
+def warp_connect(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
+    cfg = load_config(config)
+    console.print(render_result_panel(connect_warp(cfg.warp)))
+
+
+@warp_app.command("disconnect")
+def warp_disconnect(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
+    cfg = load_config(config)
+    console.print(render_result_panel(disconnect_warp(cfg.warp)))
+
+
+@warp_app.command("socks-up")
+def warp_socks_up(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
+    cfg = load_config(config)
+    console.print(render_result_panel(start_local_socks(cfg.warp)))
+
+
+@warp_app.command("socks-down")
+def warp_socks_down(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
+    cfg = load_config(config)
+    console.print(render_result_panel(stop_local_socks(cfg.warp)))
+
+
+@warp_app.command("backend-plan")
+def warp_backend_plan(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
+    cfg = load_config(config)
+    diagnostics = collect_diagnostics(cfg.warp)
+    console.print(Panel.fit(render_backend_plan(cfg.warp, diagnostics), title="WARP backend plan", border_style="cyan"))
+
+
+@warp_app.command("debug-json")
+def warp_debug_json(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
+    cfg = load_config(config)
+    diagnostics = collect_diagnostics(cfg.warp)
+    console.print(render_debug_json(cfg.warp, diagnostics))
 
 
 @mtproxy_app.command("status")
