@@ -93,7 +93,10 @@ def collect_diagnostics(config: WarpConfig) -> WarpDiagnostics:
         elif status_result.stderr:
             warp_status = status_result.stderr
 
-    recommended_backend = "warp-cli" if warp_cli_path else "cloudflared"
+    if config.backend == "auto":
+        recommended_backend = "warp-cli" if warp_cli_path else "cloudflared"
+    else:
+        recommended_backend = config.backend
 
     return WarpDiagnostics(
         os_release=detect_os_release(),
@@ -269,6 +272,7 @@ def render_debug_json(config: WarpConfig, diagnostics: WarpDiagnostics) -> str:
         {
             "config": {
                 "mode": config.mode,
+                "backend": config.backend,
                 "socks_host": config.socks_host,
                 "socks_port": config.socks_port,
                 "state_dir": config.state_dir,

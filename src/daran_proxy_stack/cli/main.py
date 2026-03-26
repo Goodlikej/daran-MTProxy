@@ -96,14 +96,14 @@ def version() -> None:
 def doctor(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
     cfg = load_config(config)
     console.print(Panel.fit("Project skeleton is alive. Modules are growing teeth.", title="doctor", border_style="green"))
-    console.print(render_summary(cfg.warp, collect_diagnostics()))
+    console.print(render_summary(cfg.warp, collect_diagnostics(cfg.warp)))
     console.print(render_mtproxy_summary(cfg.mtproxy, collect_mtproxy_diagnostics(cfg.mtproxy)))
 
 
 @warp_app.command("status")
 def warp_status(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
     cfg = load_config(config)
-    console.print(render_summary(cfg.warp, collect_diagnostics()))
+    console.print(render_summary(cfg.warp, collect_diagnostics(cfg.warp)))
 
 
 @warp_app.command("xray-json")
