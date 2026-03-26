@@ -11,6 +11,7 @@ class WarpConfig(BaseModel):
     socks_host: str = "127.0.0.1"
     socks_port: int = Field(default=40000, ge=1, le=65535)
     mode: str = "proxy"
+    backend: str = "auto"
     state_dir: str = "/var/lib/daran-proxy-stack/warp"
     log_dir: str = "/var/log/daran-proxy-stack"
 

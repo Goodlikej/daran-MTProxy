@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from daran_proxy_stack.lib.models import WarpConfig
+from daran_proxy_stack.lib.files import write_text
 from daran_proxy_stack.lib.shell import run
 
 
@@ -56,6 +57,10 @@ def _socks_pid_path(config: WarpConfig) -> Path:
 def _ensure_runtime_dirs(config: WarpConfig) -> None:
     Path(config.state_dir).mkdir(parents=True, exist_ok=True)
     Path(config.log_dir).mkdir(parents=True, exist_ok=True)
+
+
+def _generated_dir() -> Path:
+    return Path(__file__).resolve().parents[3] / "artifacts" / "generated" / "warp"
 
 
 def _is_pid_running(pid: int) -> bool:
@@ -108,6 +113,7 @@ def render_summary(config: WarpConfig, diagnostics: WarpDiagnostics | None = Non
     table.add_row("Mode", config.mode)
     table.add_row("SOCKS host", config.socks_host)
     table.add_row("SOCKS port", str(config.socks_port))
+    table.add_row("Backend", config.backend)
     table.add_row("State dir", config.state_dir)
     table.add_row("Log dir", config.log_dir)
     if diagnostics is None:
@@ -142,18 +148,26 @@ def render_xray_outbound(config: WarpConfig) -> str:
     )
 
 
+
+
+def save_xray_artifact(config: WarpConfig) -> Path:
+    path = _generated_dir() / "xray-outbound.json"
+    return write_text(path, render_xray_outbound(config))
+
 def render_backend_plan(config: WarpConfig, diagnostics: WarpDiagnostics) -> str:
+    effective_backend = diagnostics.recommended_backend if config.backend == "auto" else config.backend
     parts = [
-        f"recommended backend: {diagnostics.recommended_backend}",
+        f"configured backend: {config.backend}",
+        f"effective backend: {effective_backend}",
         f"socks endpoint: {config.socks_host}:{config.socks_port}",
     ]
-    if diagnostics.warp_cli_path:
+    if effective_backend == "warp-cli" and diagnostics.warp_cli_path:
         parts.append("use warp-cli for registration/connect/disconnect")
-    else:
+    elif effective_backend == "warp-cli":
         parts.append("install warp-cli first")
-    if diagnostics.cloudflared_path:
+    if effective_backend == "cloudflared" and diagnostics.cloudflared_path:
         parts.append("cloudflared available for local socks")
-    else:
+    elif effective_backend == "cloudflared":
         parts.append("install cloudflared for local socks proxy")
     return "\n".join(parts)
 

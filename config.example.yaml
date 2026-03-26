@@ -7,5 +7,6 @@ warp:
   socks_host: 127.0.0.1
   socks_port: 40000
   mode: proxy
+  backend: auto
   state_dir: /var/lib/daran-proxy-stack/warp
   log_dir: /var/log/daran-proxy-stack

@@ -30,6 +30,7 @@ from daran_proxy_stack.modules.warp import (
     render_result_panel,
     render_summary,
     render_xray_outbound,
+    save_xray_artifact,
     start_local_socks,
     stop_local_socks,
 )
@@ -106,9 +107,13 @@ def warp_status(config: Optional[Path] = typer.Option(None, help="Optional confi
 
 
 @warp_app.command("xray-json")
-def warp_xray_json(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
+def warp_xray_json(config: Optional[Path] = typer.Option(None, help="Optional config path."), save: bool = typer.Option(False, "--save", help="Save generated outbound to artifacts/generated/warp/xray-outbound.json.")) -> None:
     cfg = load_config(config)
-    console.print(render_xray_outbound(cfg.warp))
+    content = render_xray_outbound(cfg.warp)
+    console.print(content)
+    if save:
+        path = save_xray_artifact(cfg.warp)
+        console.print(Panel.fit(f"saved to {path}", title="WARP xray artifact", border_style="green"))
 
 
 @warp_app.command("plan")
