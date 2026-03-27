@@ -7,10 +7,17 @@
 Deliverables:
 - [x] `daran-net warp {install,start,stop,status,xray-json}`
 - [x] `daran-net mtproxy {official-install,status,tg-link,qr}`
+- [x] `daran-net cascade {apply,status}`
 - [ ] `state.json` writes after every lifecycle command
-- [ ] `daran-net relay {install,start,stop,status}` — TCP/UDP forwarding rules (iptables/socat/nginx stream)
+- [ ] First-run discovery: `discover()` per module, `POST /api/v1/discover` endpoint
+      (spec: `docs/spec/discovery.md`)
+- [ ] `GET /api/v1/inventory` — truthful stack inventory with version detection
+      for mtproxy, warp, xray, xray-pro, amneziawg
+- [ ] `DiagnosticsReport` extended with `version`, `runtime`, `config_path` fields
+- [ ] Overview panel renders Stack Inventory table with Re-discover button
 
-Done when: a single operator can deploy WARP + MTProxy on one VPS end-to-end with no manual shell steps.
+Done when: a single operator can deploy WARP + MTProxy on one VPS end-to-end
+with no manual shell steps, and the panel shows truthful state on first load.
 
 ---
 

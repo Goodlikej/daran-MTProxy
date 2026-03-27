@@ -24,11 +24,16 @@ A functional unit that manages one network service on a Node.
 
 ```
 Module
-  name:       str          # warp | mtproxy | relay
+  name:       str          # warp | mtproxy | cascade | xray | xray-pro | amneziawg
   config:     ModuleConfig # typed Pydantic model
   state:      ModuleState  # persisted to state_dir/{module}/state.json
   artifacts:  list[Path]   # generated files in artifacts/generated/{module}/
 ```
+
+Implemented modules: `warp`, `mtproxy`, `cascade`.
+Registered but not yet implemented: `xray`, `xray-pro`, `amneziawg`.
+All five must appear in InventoryReport regardless of implementation status —
+see `docs/spec/discovery.md`.
 
 ---
 
@@ -60,6 +65,26 @@ A generated file (bash script, systemd unit, xray JSON, tg-link, QR). Written on
 
 ### DiagnosticsReport
 Read-only snapshot of system state (binary paths, port availability, process status). Never persisted — collected fresh each command run.
+
+Required additional fields (added to all module diagnostics structs):
+```
+version:      str | None   # parsed version string; None if not detectable
+runtime:      str | None   # "systemd" | "docker" | "process" | None
+config_path:  str | None   # detected config file path; None if not applicable
+```
+
+---
+
+### ModuleInventory
+Lightweight cross-module view for the stack inventory table. Derived from
+`DiagnosticsReport` — never persisted. See `docs/spec/discovery.md` for the
+full field list and discovery algorithm.
+
+---
+
+### InventoryReport
+Collection of `ModuleInventory` for all known modules (present and absent).
+Returned by `GET /api/v1/inventory`. Always collected live.
 
 ---
 
