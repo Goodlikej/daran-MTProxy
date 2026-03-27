@@ -42,6 +42,17 @@
   </table>
 </div>
 
+<div class="section">
+  <h2>Actions</h2>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    <button class="btn" onclick="doAction('/api/v1/mtproxy/generate', this, 'mt-action-out')">Generate config</button>
+    <button class="btn" onclick="doAction('/api/v1/mtproxy/up', this, 'mt-action-out')">Docker up</button>
+    <button class="btn" onclick="doAction('/api/v1/mtproxy/down', this, 'mt-action-out')">Docker down</button>
+  </div>
+  <!-- Generate writes compose+secret+TG link to artifacts/; up/down require docker -->
+  <pre class="code" id="mt-action-out" style="display:none"></pre>
+</div>
+
 <div class="section" id="mt-link-section" style="display:none">
   <h2>Telegram link</h2>
   <pre class="code" id="mt-tglink"></pre>
@@ -55,6 +66,25 @@
 
 {% block scripts %}
 <script>
+async function doAction(url, btn, outId) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'running…';
+  const out = $(outId);
+  out.style.display = '';
+  out.textContent = 'calling ' + url + ' …';
+  try {
+    const r = await fetch(url, {method: 'POST'});
+    const d = await r.json();
+    out.textContent = JSON.stringify(d, null, 2);
+  } catch(e) {
+    out.textContent = 'error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 const DEPS = ['docker', 'docker_compose', 'systemctl', 'git', 'gcc', 'make'];
 const LABELS = {docker:'docker', docker_compose:'docker-compose', systemctl:'systemctl', git:'git', gcc:'gcc', make:'make'};
 

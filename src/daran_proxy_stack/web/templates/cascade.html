@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %} · Cascade{% endblock %}
+
+{% block content %}
+<h1>Cascade</h1>
+<p class="subtitle">Relay cascade diagnostics — Xray/Sing-box chain (module stub)</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>Status</h2>
+    <div class="val" id="cs-state">…</div>
+    <p id="cs-note">—</p>
+  </div>
+  <div class="card">
+    <h2>Relay</h2>
+    <div class="val" id="cs-relay-reach">…</div>
+    <p id="cs-relay">—</p>
+  </div>
+  <div class="card">
+    <h2>Upstream SOCKS</h2>
+    <div class="val" id="cs-upstream-reach">…</div>
+    <p id="cs-upstream">—</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Actions</h2>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    <button class="btn" onclick="doAction('/api/v1/cascade/refresh', this, 'cs-action-out')">Refresh diagnostics</button>
+  </div>
+  <!-- PLACEHOLDER: enable/disable cascade config editing not yet implemented -->
+  <pre class="code" id="cs-action-out" style="display:none"></pre>
+</div>
+
+<div class="section">
+  <h2>Configuration</h2>
+  <table class="kv">
+    <tr><td>Enabled</td><td id="cs-enabled">—</td></tr>
+    <tr><td>Relay</td><td id="cs-relay-kv">—</td></tr>
+    <tr><td>Upstream SOCKS</td><td id="cs-upstream-kv">—</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Raw JSON</h2>
+  <pre class="code" id="cs-raw">loading…</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function doAction(url, btn, outId) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'running…';
+  const out = $(outId);
+  out.style.display = '';
+  out.textContent = 'calling ' + url + ' …';
+  try {
+    const r = await fetch(url, {method: 'POST'});
+    const d = await r.json();
+    out.textContent = JSON.stringify(d, null, 2);
+  } catch(e) {
+    out.textContent = 'error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
+window.onStatusUpdate = function(d) {
+  // cascade is fetched separately (not included in /status aggregate yet)
+};
+
+// fetch cascade state on load and after refresh
+async function loadCascade() {
+  try {
+    const r = await fetch('/api/v1/cascade');
+    if (!r.ok) return;
+    const cs = await r.json();
+
+    const stateEl = $('cs-state');
+    stateEl.textContent = !cs.ok ? 'error' : cs.enabled ? 'enabled' : 'disabled';
+    stateEl.className = 'val ' + (!cs.ok ? 'err' : cs.enabled ? 'ok' : 'warn');
+    $('cs-note').textContent = cs.note || '—';
+
+    const relayEl = $('cs-relay-reach');
+    relayEl.textContent = cs.relay_reachable ? 'reachable' : 'unreachable';
+    relayEl.className = 'val ' + (cs.relay_reachable ? 'ok' : 'warn');
+    $('cs-relay').textContent = cs.relay || '—';
+
+    const upEl = $('cs-upstream-reach');
+    upEl.textContent = cs.upstream_reachable ? 'reachable' : 'unreachable';
+    upEl.className = 'val ' + (cs.upstream_reachable ? 'ok' : 'warn');
+    $('cs-upstream').textContent = cs.upstream || '—';
+
+    $('cs-enabled').innerHTML = cs.enabled
+      ? '<span class="badge ok">yes</span>'
+      : '<span class="badge warn">no</span>';
+    $('cs-relay-kv').textContent = cs.relay || '—';
+    $('cs-upstream-kv').textContent = cs.upstream || '—';
+
+    $('cs-raw').textContent = JSON.stringify(cs, null, 2);
+  } catch(e) {
+    $('cs-raw').textContent = 'fetch error: ' + e.message;
+  }
+}
+
+loadCascade();
+</script>
+{% endblock %}

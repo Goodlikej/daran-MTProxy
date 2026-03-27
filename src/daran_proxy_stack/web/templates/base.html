@@ -95,6 +95,16 @@ pre.code{background:var(--bg3);border:1px solid var(--border);border-radius:4px;
 .bar-fill{height:6px;border-radius:3px;background:var(--accent);transition:width .4s}
 .bar-fill.warn{background:var(--yellow)}
 .bar-fill.err{background:var(--red)}
+
+/* action buttons */
+.btn{
+  background:var(--bg3);color:var(--text);border:1px solid var(--border);
+  border-radius:4px;padding:5px 14px;font-family:var(--font);font-size:12px;
+  cursor:pointer;transition:background .15s,border-color .15s
+}
+.btn:hover{background:var(--bg2);border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.btn-sm{padding:2px 8px;font-size:11px}
 </style>
 </head>
 <body>
@@ -115,6 +125,10 @@ pre.code{background:var(--bg3);border:1px solid var(--border);border-radius:4px;
     <a href="/warp" class="{{ 'active' if active=='warp' else '' }}">
       <span class="ico">⟳</span> WARP
       <span class="status-dot" id="dot-warp"></span>
+    </a>
+    <a href="/cascade" class="{{ 'active' if active=='cascade' else '' }}">
+      <span class="ico">⟝</span> Cascade
+      <span class="status-dot" id="dot-cascade"></span>
     </a>
     <a href="/jobs" class="{{ 'active' if active=='jobs' else '' }}">
       <span class="ico">⚙</span> Jobs

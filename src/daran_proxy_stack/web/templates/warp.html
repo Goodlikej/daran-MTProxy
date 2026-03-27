@@ -43,6 +43,17 @@
 </div>
 
 <div class="section">
+  <h2>Actions</h2>
+  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+    <button class="btn" onclick="doAction('/api/v1/warp/connect', this, 'wp-action-out')">Connect WARP</button>
+    <button class="btn" onclick="doAction('/api/v1/warp/disconnect', this, 'wp-action-out')">Disconnect WARP</button>
+    <button class="btn" onclick="doAction('/api/v1/warp/socks/start', this, 'wp-action-out')">Start SOCKS</button>
+    <button class="btn" onclick="doAction('/api/v1/warp/socks/stop', this, 'wp-action-out')">Stop SOCKS</button>
+  </div>
+  <pre class="code" id="wp-action-out" style="display:none"></pre>
+</div>
+
+<div class="section">
   <h2>Xray outbound snippet</h2>
   <pre class="code" id="wp-xray"></pre>
 </div>
@@ -55,6 +66,25 @@
 
 {% block scripts %}
 <script>
+async function doAction(url, btn, outId) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = 'running…';
+  const out = $(outId);
+  out.style.display = '';
+  out.textContent = 'calling ' + url + ' …';
+  try {
+    const r = await fetch(url, {method: 'POST'});
+    const d = await r.json();
+    out.textContent = JSON.stringify(d, null, 2);
+  } catch(e) {
+    out.textContent = 'error: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+
 const TOOLS = ['warp_cli', 'cloudflared', 'systemctl'];
 const TLABELS = {warp_cli:'warp-cli', cloudflared:'cloudflared', systemctl:'systemctl'};
 

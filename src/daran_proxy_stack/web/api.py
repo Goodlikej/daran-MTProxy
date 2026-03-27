@@ -6,17 +6,24 @@ import socket
 import time
 from pathlib import Path
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 from daran_proxy_stack.lib.config import load_config
+from daran_proxy_stack.lib.executor import executor
 from daran_proxy_stack.lib.shell import run
+from daran_proxy_stack.modules import cascade as cascade_mod
 from daran_proxy_stack.modules import mtproxy as mt_mod
 from daran_proxy_stack.modules import warp as warp_mod
 
 router = APIRouter()
 
 _START_TIME = time.time()
+
+# Project root: api.py → web → daran_proxy_stack → src → project_root
+_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+_ARTIFACTS = _PROJECT_ROOT / "artifacts" / "generated"
+_MTPROXY_GENERATED = _ARTIFACTS / "mtproxy"
 
 
 def _cfg():
@@ -144,31 +151,50 @@ def _warp_info() -> dict:
         return {"ok": False, "error": str(exc)}
 
 
-def _jobs_info() -> list[dict]:
-    # Stub – no async job queue implemented yet.
-    return [
-        {
-            "id": "mtproxy-fetch",
-            "name": "MTProxy config fetch",
-            "status": "idle",
-            "last_run": None,
-            "description": "Fetch proxy-secret and proxy-multi.conf from Telegram",
+_KNOWN_ACTIONS = [
+    {"id": "mtproxy/generate", "name": "MTProxy generate artifacts", "module": "mtproxy"},
+    {"id": "warp/connect",     "name": "WARP connect",               "module": "warp"},
+    {"id": "warp/disconnect",  "name": "WARP disconnect",            "module": "warp"},
+    {"id": "warp/socks-up",    "name": "WARP SOCKS start",           "module": "warp"},
+    {"id": "warp/socks-down",  "name": "WARP SOCKS stop",            "module": "warp"},
+    {"id": "cascade/apply",    "name": "Cascade apply config",       "module": "cascade"},
+    {"id": "cascade/status",   "name": "Cascade status probe",       "module": "cascade"},
+]
+
+
+def _action_dispatch(module: str, action: str):
+    """Return a zero-arg callable for the given module/action, or raise HTTPException."""
+    cfg = _cfg()
+
+    def _warp_result(fn) -> str:
+        r = fn(cfg.warp)
+        return f"{r.title}\n{r.body}"
+
+    table: dict[str, dict[str, callable]] = {
+        "mtproxy": {
+            "generate": lambda: "\n".join(
+                f"{k}: {v}" for k, v in mt_mod.save_generated_files(_PROJECT_ROOT, cfg.mtproxy).items()
+            ),
         },
-        {
-            "id": "warp-connect",
-            "name": "WARP connection",
-            "status": "idle",
-            "last_run": None,
-            "description": "Connect WARP and verify tunnel",
+        "warp": {
+            "connect":    lambda: _warp_result(warp_mod.connect_warp),
+            "disconnect": lambda: _warp_result(warp_mod.disconnect_warp),
+            "socks-up":   lambda: _warp_result(warp_mod.start_local_socks),
+            "socks-down": lambda: _warp_result(warp_mod.stop_local_socks),
         },
-        {
-            "id": "cert-renew",
-            "name": "Certificate renewal",
-            "status": "planned",
-            "last_run": None,
-            "description": "Periodic cert renewal (not yet implemented)",
+        "cascade": {
+            "apply":  lambda: cascade_mod.apply(cfg.cascade, _ARTIFACTS),
+            "status": lambda: "\n".join(f"{k}: {v}" for k, v in cascade_mod.status_dict(cfg.cascade).items()),
         },
-    ]
+    }
+
+    mod = table.get(module)
+    if mod is None:
+        raise HTTPException(status_code=404, detail=f"unknown module: {module!r}")
+    fn = mod.get(action)
+    if fn is None:
+        raise HTTPException(status_code=404, detail=f"unknown action {action!r} for module {module!r}")
+    return fn
 
 
 # ── routes ─────────────────────────────────────────────────────────────────────
@@ -186,7 +212,7 @@ async def status() -> JSONResponse:
         "server": srv,
         "mtproxy": mt,
         "warp": wp,
-        "jobs": _jobs_info(),
+        "tasks": [t.model_dump(mode="json") for t in executor.list_all()],
     })
 
 
@@ -213,4 +239,170 @@ async def warp() -> JSONResponse:
 
 @router.get("/jobs")
 async def jobs() -> JSONResponse:
-    return JSONResponse(_jobs_info())
+    """Return live task list; fall back to known-action stubs when empty."""
+    tasks = executor.list_all()
+    if not tasks:
+        return JSONResponse([
+            {"id": a["id"], "name": a["name"], "status": "idle", "last_run": None}
+            for a in _KNOWN_ACTIONS
+        ])
+    return JSONResponse([
+        {
+            "id": t.id,
+            "name": t.name,
+            "status": t.status.value,
+            "last_run": t.finished_at.isoformat() if t.finished_at else None,
+            "output": t.output,
+        }
+        for t in tasks
+    ])
+
+
+# ── cascade ─────────────────────────────────────────────────────────────────────
+
+def _cascade_info() -> dict:
+    cfg = _cfg()
+    try:
+        d = cascade_mod.collect_diagnostics(cfg.cascade)
+        return {
+            "ok": True,
+            "note": d.note,
+            "config_present": d.config_present,
+            "enabled": cfg.cascade.enabled,
+            "relay": f"{cfg.cascade.relay_host}:{cfg.cascade.relay_port}",
+            "upstream": f"{cfg.cascade.upstream_socks_host}:{cfg.cascade.upstream_socks_port}",
+            "relay_reachable": d.relay_reachable,
+            "upstream_reachable": d.upstream_reachable,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@router.get("/cascade")
+async def cascade() -> JSONResponse:
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, _cascade_info)
+    return JSONResponse(info)
+
+
+@router.post("/cascade/refresh")
+async def cascade_refresh() -> JSONResponse:
+    # PLACEHOLDER: cascade has no runtime actions yet; returns fresh diagnostics.
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, _cascade_info)
+    return JSONResponse({"ok": info.get("ok", False), "action": "refresh", "data": info})
+
+
+# ── warp actions ─────────────────────────────────────────────────────────────────
+
+def _warp_action(fn) -> dict:
+    cfg = _cfg()
+    try:
+        result = fn(cfg.warp)
+        return {"ok": result.ok, "title": result.title, "body": result.body}
+    except Exception as exc:
+        return {"ok": False, "title": "error", "body": str(exc)}
+
+
+@router.post("/warp/connect")
+async def warp_connect() -> JSONResponse:
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, lambda: _warp_action(warp_mod.connect_warp))
+    return JSONResponse(res)
+
+
+@router.post("/warp/disconnect")
+async def warp_disconnect() -> JSONResponse:
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, lambda: _warp_action(warp_mod.disconnect_warp))
+    return JSONResponse(res)
+
+
+@router.post("/warp/socks/start")
+async def warp_socks_start() -> JSONResponse:
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, lambda: _warp_action(warp_mod.start_local_socks))
+    return JSONResponse(res)
+
+
+@router.post("/warp/socks/stop")
+async def warp_socks_stop() -> JSONResponse:
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, lambda: _warp_action(warp_mod.stop_local_socks))
+    return JSONResponse(res)
+
+
+# ── mtproxy actions ──────────────────────────────────────────────────────────────
+
+@router.post("/mtproxy/generate")
+async def mtproxy_generate() -> JSONResponse:
+    """Generate compose file, secret, and TG link artifacts on disk."""
+    def _generate() -> dict:
+        cfg = _cfg()
+        try:
+            paths = mt_mod.save_generated_files(_PROJECT_ROOT, cfg.mtproxy)
+            return {"ok": True, "files": {k: str(v) for k, v in paths.items()}}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, _generate)
+    return JSONResponse(res)
+
+
+@router.post("/mtproxy/up")
+async def mtproxy_up() -> JSONResponse:
+    """Run docker compose up -d on the generated compose file."""
+    def _up() -> dict:
+        compose_file = _MTPROXY_GENERATED / "docker-compose.yml"
+        if not compose_file.exists():
+            return {"ok": False, "error": "compose file not generated — call /mtproxy/generate first"}
+        docker = shutil.which("docker")
+        if not docker:
+            return {"ok": False, "error": "docker not found"}
+        result = run([docker, "compose", "-f", str(compose_file), "up", "-d"])
+        return {"ok": result.ok, "stdout": result.stdout, "stderr": result.stderr}
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, _up)
+    return JSONResponse(res)
+
+
+@router.post("/mtproxy/down")
+async def mtproxy_down() -> JSONResponse:
+    """Run docker compose down on the generated compose file."""
+    def _down() -> dict:
+        compose_file = _MTPROXY_GENERATED / "docker-compose.yml"
+        if not compose_file.exists():
+            return {"ok": False, "error": "compose file not generated"}
+        docker = shutil.which("docker")
+        if not docker:
+            return {"ok": False, "error": "docker not found"}
+        result = run([docker, "compose", "-f", str(compose_file), "down"])
+        return {"ok": result.ok, "stdout": result.stdout, "stderr": result.stderr}
+    loop = asyncio.get_event_loop()
+    res = await loop.run_in_executor(None, _down)
+    return JSONResponse(res)
+
+
+# ── task / action routes ──────────────────────────────────────────────────────────
+
+@router.get("/tasks")
+async def list_tasks() -> JSONResponse:
+    return JSONResponse([t.model_dump(mode="json") for t in executor.list_all()])
+
+
+@router.get("/tasks/{run_id}")
+async def get_task(run_id: str) -> JSONResponse:
+    task = executor.get(run_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"task run {run_id!r} not found")
+    return JSONResponse(task.model_dump(mode="json"))
+
+
+@router.post("/actions/{module}/{action}")
+async def trigger_action(module: str, action: str) -> JSONResponse:
+    """Dispatch module/action as a tracked background task; return TaskInfo immediately."""
+    fn = _action_dispatch(module, action)
+    task_name = f"{module}/{action}"
+    loop = asyncio.get_event_loop()
+    task = await loop.run_in_executor(None, lambda: executor.submit(task_name, fn))
+    return JSONResponse(task.model_dump(mode="json"), status_code=202)

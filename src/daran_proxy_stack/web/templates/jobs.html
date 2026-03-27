@@ -9,10 +9,12 @@
   <h2>Job queue <span class="badge muted" style="font-size:11px;font-weight:400">stub — async queue not yet implemented</span></h2>
   <table class="tbl">
     <thead>
-      <tr><th>ID</th><th>Name</th><th>Status</th><th>Last run</th><th>Description</th></tr>
+      <tr><th>ID</th><th>Name</th><th>Status</th><th>Last run</th><th>Description</th><th></th></tr>
     </thead>
     <tbody id="jobs-tbody"></tbody>
   </table>
+  <!-- PLACEHOLDER: run triggers enqueue into a real async queue once implemented -->
+  <pre class="code" id="jobs-action-out" style="display:none;margin-top:10px"></pre>
 </div>
 
 <div class="section">
@@ -30,6 +32,19 @@
 <script>
 const statusCls = {idle:'muted', planned:'warn', running:'info', ok:'ok', error:'err'};
 
+async function runJob(jobId) {
+  const out = $('jobs-action-out');
+  out.style.display = '';
+  out.textContent = 'calling /api/v1/jobs/run/' + jobId + ' …';
+  try {
+    const r = await fetch('/api/v1/jobs/run/' + jobId, {method: 'POST'});
+    const d = await r.json();
+    out.textContent = JSON.stringify(d, null, 2);
+  } catch(e) {
+    out.textContent = 'error: ' + e.message;
+  }
+}
+
 window.onStatusUpdate = function(d) {
   const jobs = d.jobs || [];
   $('jobs-tbody').innerHTML = jobs.map(j => `
@@ -39,6 +54,7 @@ window.onStatusUpdate = function(d) {
       <td><span class="badge ${statusCls[j.status]||'muted'}">${j.status}</span></td>
       <td style="color:var(--muted)">${j.last_run || '—'}</td>
       <td style="color:var(--muted)">${j.description}</td>
+      <td><button class="btn btn-sm" onclick="runJob('${j.id}')">Run</button></td>
     </tr>
   `).join('');
 };
