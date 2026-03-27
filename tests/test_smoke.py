@@ -1,10 +1,12 @@
-"""Smoke gate: config, models, shell, WARP and MTProxy pure-Python logic.
+"""Smoke gate: config, models, shell, WARP / MTProxy / Cascade / API logic.
 
 No system calls, no docker, no warp-cli required — runs offline in CI.
+Web API tests require httpx + jinja2 (skipped automatically when absent).
 """
 from __future__ import annotations
 
 import json
+import time
 import unittest.mock
 from pathlib import Path
 
@@ -17,6 +19,7 @@ from daran_proxy_stack.lib.models import (
     AppPaths,
     CascadeConfig,
     MTProxyConfig,
+    TaskStatus,
     WarpConfig,
 )
 from daran_proxy_stack.lib.shell import CommandResult
@@ -139,6 +142,68 @@ class TestCommandResult:
     def test_ok_false_on_negative(self):
         r = CommandResult(command="killed", returncode=-9, stdout="", stderr="")
         assert r.ok is False
+
+
+# ── Task executor ──────────────────────────────────────────────────────────────
+
+class TestTaskExecutor:
+    """Pure in-process executor — no system calls."""
+
+    def _fresh(self):
+        from daran_proxy_stack.lib.executor import TaskExecutor
+        return TaskExecutor()
+
+    def test_submit_returns_task_immediately(self):
+        ex = self._fresh()
+        task = ex.submit("noop", lambda: (time.sleep(0.05) or "done"))
+        assert task.id
+        assert task.name == "noop"
+
+    def test_task_reaches_done(self):
+        ex = self._fresh()
+        task = ex.submit("quick", lambda: "all good")
+        deadline = time.monotonic() + 2.0
+        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert task.status.value == "done"
+        assert task.output == "all good"
+
+    def test_task_captures_exception_as_failed(self):
+        ex = self._fresh()
+        task = ex.submit("boom", lambda: (_ for _ in ()).throw(RuntimeError("kaboom")))
+        deadline = time.monotonic() + 2.0
+        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert task.status.value == "failed"
+        assert "kaboom" in (task.output or "")
+
+    def test_get_returns_none_for_unknown_id(self):
+        ex = self._fresh()
+        assert ex.get("nonexistent") is None
+
+    def test_list_all_grows_with_submits(self):
+        ex = self._fresh()
+        ex.submit("t1", lambda: "a")
+        ex.submit("t2", lambda: "b")
+        assert len(ex.list_all()) == 2
+
+    def test_get_by_run_id(self):
+        ex = self._fresh()
+        task = ex.submit("named", lambda: "result")
+        deadline = time.monotonic() + 2.0
+        while task.status.value == "pending" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ex.get(task.id) is task
+
+    def test_timestamps_set_after_completion(self):
+        ex = self._fresh()
+        task = ex.submit("ts-test", lambda: "ok")
+        deadline = time.monotonic() + 2.0
+        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert task.started_at is not None
+        assert task.finished_at is not None
+        assert task.finished_at >= task.started_at
 
 
 # ── WARP pure logic ────────────────────────────────────────────────────────────
@@ -441,8 +506,8 @@ class TestCascadeLogic:
         assert isinstance(panel, Panel)
 
     def test_render_summary_shows_relay_address(self):
-        from rich.console import Console
         from io import StringIO
+        from rich.console import Console
         cfg = CascadeConfig(relay_host="10.0.0.5", relay_port=3128)
         panel = cascade.render_summary(cfg)
         buf = StringIO()
@@ -452,8 +517,8 @@ class TestCascadeLogic:
         assert "3128" in out
 
     def test_render_summary_disabled_note(self):
-        from rich.console import Console
         from io import StringIO
+        from rich.console import Console
         cfg = CascadeConfig(enabled=False)
         diag = cascade.collect_diagnostics(cfg)
         panel = cascade.render_summary(cfg, diag)
@@ -461,13 +526,81 @@ class TestCascadeLogic:
         Console(file=buf, no_color=True, width=120).print(panel)
         assert "disabled" in buf.getvalue()
 
+    # ── cascade MVP primitives ──────────────────────────────────────────────
 
-# ── API helper functions (pure, no HTTP) ──────────────────────────────────────
+    def test_list_relays_returns_one_entry(self):
+        cfg = CascadeConfig(relay_host="0.0.0.0", relay_port=1080, enabled=True)
+        relays = cascade.list_relays(cfg)
+        assert len(relays) == 1
+        r = relays[0]
+        assert r["relay"] == "0.0.0.0:1080"
+        assert r["enabled"] is True
+
+    def test_list_relays_contains_upstream(self):
+        cfg = CascadeConfig(upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
+        r = cascade.list_relays(cfg)[0]
+        assert r["upstream_socks"] == "127.0.0.1:40000"
+
+    def test_list_relays_mode_forwarded(self):
+        cfg = CascadeConfig(mode="chain")
+        assert cascade.list_relays(cfg)[0]["mode"] == "chain"
+
+    def test_render_3proxy_config_contains_parent(self):
+        cfg = CascadeConfig(upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
+        out = cascade.render_3proxy_config(cfg)
+        assert "parent" in out
+        assert "127.0.0.1" in out
+        assert "40000" in out
+
+    def test_render_3proxy_config_socks_line(self):
+        cfg = CascadeConfig(relay_host="0.0.0.0", relay_port=1080)
+        out = cascade.render_3proxy_config(cfg)
+        assert "socks" in out
+        assert "1080" in out
+
+    def test_render_systemd_unit_structure(self):
+        cfg = CascadeConfig()
+        svc = cascade.render_systemd_unit(cfg)
+        assert "[Unit]" in svc
+        assert "[Service]" in svc
+        assert "[Install]" in svc
+        assert "3proxy" in svc
+
+    def test_apply_writes_artifacts(self, tmp_path):
+        cfg = CascadeConfig(
+            relay_host="0.0.0.0", relay_port=1080,
+            upstream_socks_host="127.0.0.1", upstream_socks_port=40000,
+        )
+        output = cascade.apply(cfg, tmp_path)
+        assert (tmp_path / "cascade" / "3proxy.cfg").exists()
+        assert (tmp_path / "cascade" / "cascade.service").exists()
+        assert (tmp_path / "cascade" / "state.json").exists()
+        assert "relay" in output
+
+    def test_apply_state_json_content(self, tmp_path):
+        cfg = CascadeConfig(relay_port=1081, upstream_socks_port=40001)
+        cascade.apply(cfg, tmp_path)
+        state = json.loads((tmp_path / "cascade" / "state.json").read_text())
+        assert state["relay_port"] == 1081
+        assert state["upstream_socks_port"] == 40001
+
+    def test_status_dict_keys(self):
+        cfg = CascadeConfig(enabled=False)
+        with unittest.mock.patch("daran_proxy_stack.modules.cascade._port_open", return_value=False):
+            d = cascade.status_dict(cfg)
+        assert "enabled" in d
+        assert "relay" in d
+        assert "upstream_socks" in d
+        assert "relay_reachable" in d
+        assert "upstream_reachable" in d
+
+
+# ── API helper data structures (pure, no HTTP) ────────────────────────────────
 
 class TestApiHelpers:
-    """Tests for the pure helper functions in web/api.py."""
+    """Tests for pure data constants and helpers in web/api.py."""
 
-    def test_known_actions_returns_list(self):
+    def test_known_actions_is_list(self):
         from daran_proxy_stack.web.api import _KNOWN_ACTIONS
         assert isinstance(_KNOWN_ACTIONS, list)
         assert len(_KNOWN_ACTIONS) > 0
@@ -475,9 +608,10 @@ class TestApiHelpers:
     def test_known_actions_required_keys(self):
         from daran_proxy_stack.web.api import _KNOWN_ACTIONS
         for action in _KNOWN_ACTIONS:
-            assert {"id", "name", "module"} <= set(action.keys()), f"action {action.get('id')!r} missing keys"
+            assert {"id", "name", "module"} <= set(action.keys()), \
+                f"action {action.get('id')!r} missing keys"
 
-    def test_known_actions_known_modules(self):
+    def test_known_actions_covers_warp_and_cascade(self):
         from daran_proxy_stack.web.api import _KNOWN_ACTIONS
         modules = {a["module"] for a in _KNOWN_ACTIONS}
         assert "warp" in modules
@@ -486,15 +620,25 @@ class TestApiHelpers:
     def test_known_actions_ids_are_nonempty_strings(self):
         from daran_proxy_stack.web.api import _KNOWN_ACTIONS
         for action in _KNOWN_ACTIONS:
-            assert isinstance(action["id"], str)
-            assert action["id"]  # non-empty
+            assert isinstance(action["id"], str) and action["id"]
+
+    def test_known_actions_includes_warp_connect(self):
+        from daran_proxy_stack.web.api import _KNOWN_ACTIONS
+        ids = {a["id"] for a in _KNOWN_ACTIONS}
+        assert "warp/connect" in ids
+
+    def test_known_actions_includes_mtproxy_generate(self):
+        from daran_proxy_stack.web.api import _KNOWN_ACTIONS
+        ids = {a["id"] for a in _KNOWN_ACTIONS}
+        assert "mtproxy/generate" in ids
 
 
-# ── API HTTP endpoints (requires httpx / starlette TestClient) ─────────────────
+# ── API HTTP endpoints (requires httpx + jinja2 / starlette TestClient) ────────
 
 @pytest.fixture(scope="module")
 def api_client():
     pytest.importorskip("httpx")
+    pytest.importorskip("jinja2")
     from fastapi.testclient import TestClient
     from daran_proxy_stack.web.app import app
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -503,7 +647,7 @@ def api_client():
 
 class TestWebApiEndpoints:
     """HTTP-level smoke tests for the /api/v1 routes.
-    Skipped automatically when httpx is not installed."""
+    Skipped automatically when httpx or jinja2 is not installed."""
 
     def test_status_returns_200(self, api_client):
         resp = api_client.get("/api/v1/status")
@@ -515,7 +659,7 @@ class TestWebApiEndpoints:
         assert "server" in data
         assert "mtproxy" in data
         assert "warp" in data
-        assert "jobs" in data
+        assert "tasks" in data
 
     def test_status_panel_uptime_is_number(self, api_client):
         data = api_client.get("/api/v1/status").json()
@@ -559,9 +703,68 @@ class TestWebApiEndpoints:
         data = api_client.get("/api/v1/servers").json()
         assert "hostname" in data
 
+    def test_cascade_endpoint_returns_200(self, api_client):
+        resp = api_client.get("/api/v1/cascade")
+        assert resp.status_code == 200
+
+    def test_cascade_endpoint_has_ok_key(self, api_client):
+        data = api_client.get("/api/v1/cascade").json()
+        assert "ok" in data
+
     def test_root_redirects(self, api_client):
         resp = api_client.get("/", follow_redirects=False)
         assert resp.status_code in (301, 302, 307, 308)
+
+    # ── WARP action endpoints ──────────────────────────────────────────────
+
+    def test_warp_connect_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/warp/connect")
+        assert resp.status_code == 200
+
+    def test_warp_connect_post_has_ok_key(self, api_client):
+        data = api_client.post("/api/v1/warp/connect").json()
+        assert "ok" in data
+
+    def test_warp_disconnect_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/warp/disconnect")
+        assert resp.status_code == 200
+
+    def test_warp_socks_start_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/warp/socks/start")
+        assert resp.status_code == 200
+
+    def test_warp_socks_stop_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/warp/socks/stop")
+        assert resp.status_code == 200
+
+    # ── MTProxy action endpoints ───────────────────────────────────────────
+
+    def test_mtproxy_generate_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/mtproxy/generate")
+        assert resp.status_code == 200
+
+    def test_mtproxy_generate_has_ok_key(self, api_client):
+        data = api_client.post("/api/v1/mtproxy/generate").json()
+        assert "ok" in data
+
+    def test_mtproxy_up_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/mtproxy/up")
+        assert resp.status_code == 200
+
+    def test_mtproxy_down_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/mtproxy/down")
+        assert resp.status_code == 200
+
+    # ── Cascade action endpoints ───────────────────────────────────────────
+
+    def test_cascade_refresh_post_returns_200(self, api_client):
+        resp = api_client.post("/api/v1/cascade/refresh")
+        assert resp.status_code == 200
+
+    def test_cascade_refresh_has_ok_key(self, api_client):
+        data = api_client.post("/api/v1/cascade/refresh").json()
+        assert "ok" in data
+        assert "action" in data
 
 
 # ── MTProxy pure logic ────────────────────────────────────────────────────────
@@ -650,144 +853,3 @@ class TestMTProxyLogic:
         cfg = MTProxyConfig(ad_tag="promo99")
         cmd = mtproxy.render_official_run_command(cfg, secret=self._SECRET)
         assert "-P promo99" in cmd
-
-
-# ── TaskExecutor ───────────────────────────────────────────────────────────────
-
-class TestTaskExecutor:
-    """Pure in-process executor — no system calls."""
-
-    def _fresh(self):
-        from daran_proxy_stack.lib.executor import TaskExecutor
-        return TaskExecutor()
-
-    def test_submit_returns_task_immediately(self):
-        import time
-        ex = self._fresh()
-        task = ex.submit("noop", lambda: (time.sleep(0.05) or "done"))
-        # Returned before the thread finishes
-        assert task.id
-        assert task.name == "noop"
-
-    def test_task_reaches_done(self):
-        import time
-        ex = self._fresh()
-        task = ex.submit("quick", lambda: "all good")
-        deadline = time.monotonic() + 2.0
-        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert task.status.value == "done"
-        assert task.output == "all good"
-
-    def test_task_captures_exception_as_failed(self):
-        import time
-        ex = self._fresh()
-        task = ex.submit("boom", lambda: (_ for _ in ()).throw(RuntimeError("kaboom")))
-        deadline = time.monotonic() + 2.0
-        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert task.status.value == "failed"
-        assert "kaboom" in (task.output or "")
-
-    def test_get_returns_none_for_unknown_id(self):
-        ex = self._fresh()
-        assert ex.get("nonexistent") is None
-
-    def test_list_all_grows_with_submits(self):
-        ex = self._fresh()
-        ex.submit("t1", lambda: "a")
-        ex.submit("t2", lambda: "b")
-        assert len(ex.list_all()) == 2
-
-    def test_get_by_run_id(self):
-        import time
-        ex = self._fresh()
-        task = ex.submit("named", lambda: "result")
-        deadline = time.monotonic() + 2.0
-        while task.status.value == "pending" and time.monotonic() < deadline:
-            time.sleep(0.01)
-        fetched = ex.get(task.id)
-        assert fetched is task
-
-    def test_timestamps_set_after_completion(self):
-        import time
-        ex = self._fresh()
-        task = ex.submit("ts-test", lambda: "ok")
-        deadline = time.monotonic() + 2.0
-        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert task.started_at is not None
-        assert task.finished_at is not None
-        assert task.finished_at >= task.started_at
-
-
-# ── Cascade primitives ─────────────────────────────────────────────────────────
-
-class TestCascadePrimitives:
-    def _cfg(self, **kw) -> CascadeConfig:
-        return CascadeConfig(**kw)
-
-    def test_list_relays_returns_one_entry(self):
-        cfg = self._cfg(relay_host="0.0.0.0", relay_port=1080, enabled=True)
-        relays = cascade.list_relays(cfg)
-        assert len(relays) == 1
-        r = relays[0]
-        assert r["relay"] == "0.0.0.0:1080"
-        assert r["enabled"] is True
-
-    def test_list_relays_contains_upstream(self):
-        cfg = self._cfg(upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
-        r = cascade.list_relays(cfg)[0]
-        assert r["upstream_socks"] == "127.0.0.1:40000"
-
-    def test_list_relays_mode_forwarded(self):
-        cfg = self._cfg(mode="chain")
-        assert cascade.list_relays(cfg)[0]["mode"] == "chain"
-
-    def test_render_3proxy_config_contains_parent(self):
-        cfg = self._cfg(upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
-        out = cascade.render_3proxy_config(cfg)
-        assert "parent" in out
-        assert "127.0.0.1" in out
-        assert "40000" in out
-
-    def test_render_3proxy_config_socks_line(self):
-        cfg = self._cfg(relay_host="0.0.0.0", relay_port=1080)
-        out = cascade.render_3proxy_config(cfg)
-        assert "socks" in out
-        assert "1080" in out
-
-    def test_render_systemd_unit_structure(self):
-        cfg = self._cfg()
-        svc = cascade.render_systemd_unit(cfg)
-        assert "[Unit]" in svc
-        assert "[Service]" in svc
-        assert "[Install]" in svc
-        assert "3proxy" in svc
-
-    def test_apply_writes_artifacts(self, tmp_path):
-        cfg = self._cfg(relay_host="0.0.0.0", relay_port=1080,
-                        upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
-        output = cascade.apply(cfg, tmp_path)
-        assert (tmp_path / "cascade" / "3proxy.cfg").exists()
-        assert (tmp_path / "cascade" / "cascade.service").exists()
-        assert (tmp_path / "cascade" / "state.json").exists()
-        assert "relay" in output
-
-    def test_apply_state_json_content(self, tmp_path):
-        import json as _json
-        cfg = self._cfg(relay_port=1081, upstream_socks_port=40001)
-        cascade.apply(cfg, tmp_path)
-        state = _json.loads((tmp_path / "cascade" / "state.json").read_text())
-        assert state["relay_port"] == 1081
-        assert state["upstream_socks_port"] == 40001
-
-    def test_status_dict_keys(self):
-        cfg = self._cfg(enabled=False)
-        with unittest.mock.patch("daran_proxy_stack.modules.cascade._port_open", return_value=False):
-            d = cascade.status_dict(cfg)
-        assert "enabled" in d
-        assert "relay" in d
-        assert "upstream_socks" in d
-        assert "relay_reachable" in d
-        assert "upstream_reachable" in d

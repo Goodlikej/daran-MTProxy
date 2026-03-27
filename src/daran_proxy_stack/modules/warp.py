@@ -45,6 +45,23 @@ def detect_os_release() -> str:
     return result.stdout or "unknown"
 
 
+def _detect_os_info() -> tuple[str, str]:
+    """Return (os_id, version_codename) parsed from /etc/os-release."""
+    result = run([
+        "bash", "-lc",
+        ". /etc/os-release && printf '%s %s' \"${ID:-}\" \"${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}\"",
+    ])
+    if result.ok and result.stdout:
+        parts = result.stdout.strip().split()
+        return (parts[0] if parts else "unknown"), (parts[1] if len(parts) > 1 else "")
+    return "unknown", ""
+
+
+def _supported_install_os() -> bool:
+    os_id, _ = _detect_os_info()
+    return os_id in ("debian", "ubuntu")
+
+
 def _parse_warp_status_text(status_text: str) -> bool:
     lowered = status_text.lower()
     return "connected" in lowered or "warp is on" in lowered

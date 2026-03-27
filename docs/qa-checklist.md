@@ -46,6 +46,11 @@ Manual verifications below require a live VPS.
 - [ ] With `backend: auto` + only `cloudflared` installed → effective backend = `cloudflared`
 - [ ] `backend: warp-cli` override is honoured regardless of environment
 
+### OS detection guardrails (new)
+- [ ] `daran-net warp install` on Debian/Ubuntu proceeds to apt install
+- [ ] `daran-net warp install` on non-Debian/Ubuntu prints unsupported-OS message and exits non-zero
+- [ ] Re-running `warp install` when warp-cli already installed returns ok without re-downloading
+
 ### Live (warp-cli)
 - [ ] `warp-cli --accept-tos status` reports `Connected` after connect
 - [ ] SOCKS proxy at configured `socks_host:socks_port` forwards traffic (curl via SOCKS)
@@ -59,13 +64,41 @@ Manual verifications below require a live VPS.
 
 ## Cascade / Relay
 
-> Module not yet implemented. Checklist items are pre-planned acceptance criteria.
+> Module scaffold present; connectivity probing not yet implemented.
+> All live tests are pre-planned acceptance criteria — marked accordingly.
 
-- [ ] Cascade config accepted in `config.yaml` under a `cascade:` key
-- [ ] Node list parsed; each entry has `host`, `port`, `protocol`
-- [ ] `daran-net cascade status` lists all configured relay nodes
+### Implemented (testable offline)
+- [x] `cascade:` section accepted in `config.yaml` and parsed into `CascadeConfig`
+- [x] `CascadeConfig` defaults: `relay_host=127.0.0.1`, `relay_port=1080`, `enabled=false`
+- [x] `collect_diagnostics(None)` returns stub with `config_present=false`
+- [x] `collect_diagnostics(config)` with `enabled=false` skips port probes, sets `relay_reachable=false`
+- [x] `render_summary(cfg)` returns Rich Panel without crashing
+
+### Live / pre-planned (not yet implemented)
+- [ ] `daran-net cascade status` CLI command exists and prints summary
+- [ ] `enabled: true` causes connectivity probe of `relay_host:relay_port`
 - [ ] Traffic route: client → MTProxy → WARP SOCKS → target
 - [ ] Fallback node selected when primary is unreachable
+
+---
+
+## Web Panel API
+
+> Panel routes live at `/api/v1/*`. HTML views require Jinja2 templates on disk.
+
+### Implemented (testable with httpx)
+- [x] `GET /api/v1/status` returns 200 with keys: `panel_uptime_s`, `server`, `mtproxy`, `warp`, `jobs`
+- [x] `GET /api/v1/jobs` returns 200 with a JSON list; each item has `id`, `name`, `status`, `description`, `last_run`
+- [x] `GET /api/v1/warp` returns 200 with `ok` key
+- [x] `GET /api/v1/mtproxy` returns 200 with `ok` key
+- [x] `GET /api/v1/servers` returns 200 with `hostname` key
+- [x] `GET /` redirects to `/overview` (3xx)
+
+### Live panel (VPS)
+- [ ] `daran-net panel` starts uvicorn; panel reachable at configured host:port
+- [ ] All 5 HTML views (overview, servers, mtproxy, warp, jobs) render without 500 errors
+- [ ] `/api/v1/status` `warp.connected` reflects live warp-cli state
+- [ ] `/api/v1/mtproxy` `container_status` reflects live docker container state
 
 ---
 
