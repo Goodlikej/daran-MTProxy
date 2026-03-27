@@ -1,0 +1,67 @@
+# deploy/daran-proxy-panel.service — systemd unit template for daran-proxy-stack panel
+#
+# INSTALL:
+#   1. Copy / symlink this file (with substitutions filled in) to:
+#        /etc/systemd/system/daran-proxy-panel.service
+#   2. Reload systemd and enable:
+#        sudo systemctl daemon-reload
+#        sudo systemctl enable --now daran-proxy-panel
+#
+# SUBSTITUTIONS — replace the placeholders below before installing:
+#   %REPO_DIR%   — absolute path to your project checkout
+#                  e.g. /opt/daran-proxy-stack  or  /home/ubuntu/daran-proxy-stack
+#   %RUN_USER%   — OS user that owns the checkout and should run the process
+#                  e.g. ubuntu, deploy, daran
+#   %RUN_GROUP%  — primary group of that user (often same as user name)
+#
+# QUICK INSTALL (one-liner, adjust paths):
+#   REPO=/opt/daran-proxy-stack
+#   USER=ubuntu
+#   sed "s|%REPO_DIR%|$REPO|g; s|%RUN_USER%|$USER|g; s|%RUN_GROUP%|$USER|g" \
+#     deploy/daran-proxy-panel.service \
+#     | sudo tee /etc/systemd/system/daran-proxy-panel.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now daran-proxy-panel
+
+[Unit]
+Description=Daran Proxy Stack — Web Management Panel
+Documentation=file://%REPO_DIR%/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%RUN_USER%
+Group=%RUN_GROUP%
+
+WorkingDirectory=%REPO_DIR%
+
+# Activate the project venv and start uvicorn directly (no shell wrapper needed)
+ExecStart=%REPO_DIR%/.venv/bin/uvicorn \
+    daran_proxy_stack.web.app:app \
+    --host 127.0.0.1 \
+    --port 7331
+
+# Override bind address / port without editing this file:
+#   sudo systemctl edit daran-proxy-panel
+# and add an [Service] section with Environment= lines, e.g.:
+#   [Service]
+#   Environment="DARAN_PANEL_HOST=0.0.0.0"
+#   Environment="DARAN_PANEL_PORT=8080"
+# Then regenerate ExecStart with those values, or use the run script instead:
+#   ExecStart=/bin/bash %REPO_DIR%/scripts/run-panel.sh
+
+Restart=on-failure
+RestartSec=5s
+
+# Give the process time to shut down gracefully before SIGKILL
+TimeoutStopSec=15s
+
+# Security hardening (safe defaults — tighten further if needed)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%REPO_DIR%
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

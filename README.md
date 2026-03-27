@@ -47,7 +47,56 @@ Instead, this project uses:
 - PyYAML
 - qrcode
 
-## Install
+## Quick bootstrap
+
+Clone, set up a venv, install deps, and run smoke tests in one shot:
+
+```bash
+git clone <repo-url> daran-proxy-stack
+cd daran-proxy-stack
+bash scripts/bootstrap.sh
+```
+
+If you're already inside the checkout the script detects it automatically — no
+arguments needed.  The venv is created at `.venv/` and the package is installed
+in editable mode (`pip install -e ".[dev]"`).
+
+## Web panel
+
+Start the management panel (default `http://127.0.0.1:7331`):
+
+```bash
+# via the run script (handles venv activation automatically)
+bash scripts/run-panel.sh
+
+# override host/port
+DARAN_PANEL_HOST=0.0.0.0 DARAN_PANEL_PORT=8080 bash scripts/run-panel.sh
+
+# development mode (uvicorn --reload)
+DARAN_RELOAD=1 bash scripts/run-panel.sh
+
+# or directly via the CLI entry point
+source .venv/bin/activate
+daran-net panel --host 127.0.0.1 --port 7331
+```
+
+## systemd service
+
+A ready-to-use unit template lives in `deploy/daran-proxy-panel.service`.
+
+```bash
+# fill in your repo path and OS user, then install
+REPO=/opt/daran-proxy-stack
+USER=ubuntu
+sed "s|%REPO_DIR%|$REPO|g; s|%RUN_USER%|$USER|g; s|%RUN_GROUP%|$USER|g" \
+  deploy/daran-proxy-panel.service \
+  | sudo tee /etc/systemd/system/daran-proxy-panel.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now daran-proxy-panel
+sudo systemctl status daran-proxy-panel
+```
+
+## Manual install
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
