@@ -24,7 +24,11 @@ async def root() -> RedirectResponse:
 
 def _view(name: str):
     async def handler(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse(f"{name}.html", {"request": request, "active": name, "views": _VIEWS})
+        return templates.TemplateResponse(
+            request=request,
+            name=f"{name}.html",
+            context={"request": request, "active": name, "views": _VIEWS},
+        )
     handler.__name__ = name
     return handler
 
