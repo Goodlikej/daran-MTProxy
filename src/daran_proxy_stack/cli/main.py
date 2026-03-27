@@ -485,5 +485,26 @@ def mtproxy_plan() -> None:
     ))
 
 
+@app.command("serve")
+def serve(
+    host: str = typer.Option("127.0.0.1", help="Bind host"),
+    port: int = typer.Option(8000, help="Bind port"),
+    reload: bool = typer.Option(False, help="Enable auto-reload (dev mode)"),
+) -> None:
+    """Start the REST API server (FastAPI/uvicorn)."""
+    try:
+        import uvicorn
+    except ImportError:
+        console.print("[red]uvicorn is not installed — run: pip install uvicorn[standard][/red]")
+        raise typer.Exit(1)
+    console.print(f"[cyan]API server starting on http://{host}:{port}[/cyan]")
+    uvicorn.run(
+        "daran_proxy_stack.api.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+    )
+
+
 if __name__ == "__main__":
     app()

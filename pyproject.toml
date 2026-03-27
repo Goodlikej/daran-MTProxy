@@ -17,10 +17,18 @@ dependencies = [
   "pydantic>=2.7,<3.0",
   "PyYAML>=6.0,<7.0",
   "qrcode>=7.4,<8.0",
+  "fastapi>=0.111,<1.0",
+  "uvicorn[standard]>=0.29,<1.0",
 ]
 
 [project.scripts]
 daran-net = "daran_proxy_stack.cli.main:app"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
