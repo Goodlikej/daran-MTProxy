@@ -485,21 +485,28 @@ def mtproxy_plan() -> None:
     ))
 
 
-@app.command("serve")
-def serve(
+@app.command("panel")
+def panel(
     host: str = typer.Option("127.0.0.1", help="Bind host"),
-    port: int = typer.Option(8000, help="Bind port"),
+    port: int = typer.Option(7331, help="Bind port"),
     reload: bool = typer.Option(False, help="Enable auto-reload (dev mode)"),
 ) -> None:
-    """Start the REST API server (FastAPI/uvicorn)."""
+    """Start the web management panel (FastAPI/uvicorn)."""
     try:
         import uvicorn
     except ImportError:
-        console.print("[red]uvicorn is not installed — run: pip install uvicorn[standard][/red]")
+        console.print("[red]uvicorn is not installed — run: pip install 'daran-proxy-stack[dev]'[/red]")
         raise typer.Exit(1)
-    console.print(f"[cyan]API server starting on http://{host}:{port}[/cyan]")
+    console.print(Panel(
+        f"Web panel → [link]http://{host}:{port}[/link]\n"
+        f"API docs  → [link]http://{host}:{port}/api/docs[/link]\n\n"
+        "Views: Overview · Servers · MTProxy · WARP · Jobs\n"
+        "Press Ctrl-C to stop.",
+        title="Daran Proxy Stack · Panel",
+        border_style="cyan",
+    ))
     uvicorn.run(
-        "daran_proxy_stack.api.app:app",
+        "daran_proxy_stack.web.app:app",
         host=host,
         port=port,
         reload=reload,

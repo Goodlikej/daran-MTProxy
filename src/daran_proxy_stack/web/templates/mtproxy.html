@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %} · MTProxy{% endblock %}
+
+{% block content %}
+<h1>MTProxy</h1>
+<p class="subtitle">Telegram MTProxy diagnostics and configuration</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>Status</h2>
+    <div class="val" id="mt-state">…</div>
+    <p id="mt-container">—</p>
+  </div>
+  <div class="card">
+    <h2>Port</h2>
+    <div class="val" id="mt-port">…</div>
+    <p id="mt-port-status">—</p>
+  </div>
+  <div class="card">
+    <h2>Stats port</h2>
+    <div class="val" id="mt-stats-port">…</div>
+    <p>internal metrics</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Dependencies</h2>
+  <table class="tbl">
+    <thead><tr><th>Tool</th><th>Available</th></tr></thead>
+    <tbody id="mt-deps"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Configuration</h2>
+  <table class="kv">
+    <tr><td>Server IP</td><td id="mt-ip">—</td></tr>
+    <tr><td>Image</td><td id="mt-image">—</td></tr>
+    <tr><td>Compose file</td><td id="mt-compose">—</td></tr>
+    <tr><td>Run user exists</td><td id="mt-runuser">—</td></tr>
+    <tr><td>Secret</td><td id="mt-secret">—</td></tr>
+  </table>
+</div>
+
+<div class="section" id="mt-link-section" style="display:none">
+  <h2>Telegram link</h2>
+  <pre class="code" id="mt-tglink"></pre>
+</div>
+
+<div class="section">
+  <h2>Raw JSON</h2>
+  <pre class="code" id="mt-raw">loading…</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const DEPS = ['docker', 'docker_compose', 'systemctl', 'git', 'gcc', 'make'];
+const LABELS = {docker:'docker', docker_compose:'docker-compose', systemctl:'systemctl', git:'git', gcc:'gcc', make:'make'};
+
+window.onStatusUpdate = function(d) {
+  const mt = d.mtproxy || {};
+
+  const running = mt.container_status && mt.container_status !== 'not installed';
+  const stateEl = $('mt-state');
+  stateEl.textContent = !mt.ok ? 'error' : running ? 'running' : 'stopped';
+  stateEl.className = 'val ' + (!mt.ok ? 'err' : running ? 'ok' : 'warn');
+  $('mt-container').textContent = mt.container_status || '—';
+
+  $('mt-port').textContent = mt.port || '—';
+  $('mt-port-status').textContent = 'port status: ' + (mt.port_status || '—');
+
+  $('mt-stats-port').textContent = mt.stats_port || '—';
+
+  // deps table
+  const deps = $('mt-deps');
+  deps.innerHTML = DEPS.map(k => {
+    const v = mt[k];
+    return `<tr><td>${LABELS[k]}</td><td>${v
+      ? '<span class="badge ok">found</span>'
+      : '<span class="badge err">missing</span>'}</td></tr>`;
+  }).join('');
+
+  $('mt-ip').textContent = mt.server_ip || '—';
+  $('mt-image').textContent = mt.image || '—';
+  $('mt-compose').innerHTML = mt.compose_exists
+    ? '<span class="badge ok">exists</span>'
+    : '<span class="badge muted">not generated</span>';
+  $('mt-runuser').innerHTML = mt.run_user_exists
+    ? '<span class="badge ok">yes</span>'
+    : '<span class="badge warn">no</span>';
+  $('mt-secret').textContent = mt.secret ? mt.secret.slice(0, 6) + '…' : '—';
+
+  if (mt.tg_link) {
+    $('mt-link-section').style.display = '';
+    $('mt-tglink').textContent = mt.tg_link;
+  }
+
+  $('mt-raw').textContent = JSON.stringify(mt, null, 2);
+};
+</script>
+{% endblock %}

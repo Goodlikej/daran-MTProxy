@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %} · Servers{% endblock %}
+
+{% block content %}
+<h1>Servers</h1>
+<p class="subtitle">Host system information</p>
+
+<div class="section">
+  <h2>Host</h2>
+  <table class="kv" id="srv-kv">
+    <tr><td>Hostname</td><td id="s-hostname">…</td></tr>
+    <tr><td>IP address</td><td id="s-ip">…</td></tr>
+    <tr><td>OS</td><td id="s-os">…</td></tr>
+    <tr><td>Uptime</td><td id="s-uptime">…</td></tr>
+    <tr><td>Load (1/5/15m)</td><td id="s-load">…</td></tr>
+  </table>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Memory</h2>
+    <div class="val" id="s-mem-used">…</div>
+    <p id="s-mem-sub">of total</p>
+    <div class="bar-wrap"><div class="bar-fill" id="s-mem-bar" style="width:0%"></div></div>
+  </div>
+  <div class="card">
+    <h2>Disk (/)</h2>
+    <div class="val" id="s-disk-used">…</div>
+    <p id="s-disk-sub">used</p>
+    <div class="bar-wrap"><div class="bar-fill" id="s-disk-bar" style="width:0%"></div></div>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Raw JSON</h2>
+  <pre class="code" id="s-raw">loading…</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.onStatusUpdate = function(d) {
+  const srv = d.server || {};
+
+  $('s-hostname').textContent = srv.hostname || '—';
+  $('s-ip').innerHTML = srv.ip
+    ? `<span class="badge ok">${srv.ip}</span>`
+    : '<span class="badge err">unknown</span>';
+  $('s-os').textContent = srv.os || '—';
+
+  const upSec = srv.uptime_s;
+  if (upSec != null) {
+    const days = Math.floor(upSec / 86400);
+    const h = Math.floor((upSec % 86400) / 3600);
+    const m = Math.floor((upSec % 3600) / 60);
+    $('s-uptime').textContent = (days ? days + 'd ' : '') + h + 'h ' + m + 'm';
+  }
+
+  $('s-load').textContent = (srv.load_avg || []).join(' / ') || '—';
+
+  const mem = srv.mem || {};
+  if (mem.total_mb) {
+    $('s-mem-used').textContent = mem.used_mb + ' MB';
+    $('s-mem-sub').textContent = 'of ' + mem.total_mb + ' MB (' + mem.used_pct + '% used)';
+    const bar = $('s-mem-bar');
+    bar.style.width = mem.used_pct + '%';
+    bar.className = 'bar-fill' + (mem.used_pct > 85 ? ' err' : mem.used_pct > 65 ? ' warn' : '');
+  }
+
+  const disk = srv.disk || {};
+  if (disk.used) {
+    const pct = parseInt(disk.used_pct || '0');
+    $('s-disk-used').textContent = disk.used;
+    $('s-disk-sub').textContent = disk.avail + ' available (' + disk.used_pct + ')';
+    const bar = $('s-disk-bar');
+    bar.style.width = pct + '%';
+    bar.className = 'bar-fill' + (pct > 85 ? ' err' : pct > 65 ? ' warn' : '');
+  }
+
+  $('s-raw').textContent = JSON.stringify(srv, null, 2);
+};
+</script>
+{% endblock %}

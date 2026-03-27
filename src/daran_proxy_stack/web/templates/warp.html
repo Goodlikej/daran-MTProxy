@@ -1,0 +1,102 @@
+{% extends "base.html" %}
+{% block title %} · WARP{% endblock %}
+
+{% block content %}
+<h1>WARP</h1>
+<p class="subtitle">Cloudflare WARP diagnostics and SOCKS5 proxy status</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>Connection</h2>
+    <div class="val" id="wp-conn">…</div>
+    <p id="wp-status-text">—</p>
+  </div>
+  <div class="card">
+    <h2>SOCKS5 proxy</h2>
+    <div class="val" id="wp-socks">…</div>
+    <p id="wp-socks-ep">—</p>
+  </div>
+  <div class="card">
+    <h2>Backend</h2>
+    <div class="val" id="wp-backend">…</div>
+    <p>recommended backend</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Tools</h2>
+  <table class="tbl">
+    <thead><tr><th>Tool</th><th>Available</th></tr></thead>
+    <tbody id="wp-tools"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Configuration</h2>
+  <table class="kv">
+    <tr><td>OS</td><td id="wp-os">—</td></tr>
+    <tr><td>Server IP</td><td id="wp-ip">—</td></tr>
+    <tr><td>SOCKS host</td><td id="wp-socks-host">—</td></tr>
+    <tr><td>SOCKS port</td><td id="wp-socks-port">—</td></tr>
+    <tr><td>WARP status raw</td><td id="wp-raw-status">—</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Xray outbound snippet</h2>
+  <pre class="code" id="wp-xray"></pre>
+</div>
+
+<div class="section">
+  <h2>Raw JSON</h2>
+  <pre class="code" id="wp-raw">loading…</pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const TOOLS = ['warp_cli', 'cloudflared', 'systemctl'];
+const TLABELS = {warp_cli:'warp-cli', cloudflared:'cloudflared', systemctl:'systemctl'};
+
+window.onStatusUpdate = function(d) {
+  const wp = d.warp || {};
+
+  const connEl = $('wp-conn');
+  connEl.textContent = !wp.ok ? 'error' : wp.connected ? 'connected' : 'disconnected';
+  connEl.className = 'val ' + (!wp.ok ? 'err' : wp.connected ? 'ok' : 'warn');
+  $('wp-status-text').textContent = wp.warp_status || '—';
+
+  const socksEl = $('wp-socks');
+  socksEl.textContent = wp.socks_running ? 'running' : 'stopped';
+  socksEl.className = 'val ' + (wp.socks_running ? 'ok' : 'warn');
+  $('wp-socks-ep').textContent = (wp.socks_host || '') + ':' + (wp.socks_port || '');
+
+  $('wp-backend').textContent = wp.backend || '—';
+
+  // tools table
+  $('wp-tools').innerHTML = TOOLS.map(k => {
+    const v = wp[k];
+    return `<tr><td>${TLABELS[k]}</td><td>${v
+      ? '<span class="badge ok">found</span>'
+      : '<span class="badge err">missing</span>'}</td></tr>`;
+  }).join('');
+
+  $('wp-os').textContent = wp.os || '—';
+  $('wp-ip').textContent = wp.server_ip || '—';
+  $('wp-socks-host').textContent = wp.socks_host || '—';
+  $('wp-socks-port').textContent = wp.socks_port || '—';
+  $('wp-raw-status').textContent = wp.warp_status || '—';
+
+  // xray snippet
+  if (wp.socks_host && wp.socks_port) {
+    $('wp-xray').textContent = JSON.stringify({
+      protocol: "socks",
+      settings: { servers: [{ address: wp.socks_host, port: wp.socks_port }] },
+      tag: "warp-out"
+    }, null, 2);
+  }
+
+  $('wp-raw').textContent = JSON.stringify(wp, null, 2);
+};
+</script>
+{% endblock %}

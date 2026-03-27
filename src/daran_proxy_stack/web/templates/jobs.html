@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %} · Jobs{% endblock %}
+
+{% block content %}
+<h1>Jobs</h1>
+<p class="subtitle">Background tasks and scheduled operations</p>
+
+<div class="section">
+  <h2>Job queue <span class="badge muted" style="font-size:11px;font-weight:400">stub — async queue not yet implemented</span></h2>
+  <table class="tbl">
+    <thead>
+      <tr><th>ID</th><th>Name</th><th>Status</th><th>Last run</th><th>Description</th></tr>
+    </thead>
+    <tbody id="jobs-tbody"></tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Planned integrations</h2>
+  <table class="kv">
+    <tr><td>Periodic fetch</td><td>Auto-pull Telegram proxy-secret / proxy-multi.conf on a cron</td></tr>
+    <tr><td>Health checks</td><td>Periodic port checks and WARP reconnect on failure</td></tr>
+    <tr><td>Cert renewal</td><td>Let's Encrypt / ACME renewal for relay endpoints</td></tr>
+    <tr><td>Relay cascade</td><td>Build and manage Xray / Sing-box relay chains</td></tr>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const statusCls = {idle:'muted', planned:'warn', running:'info', ok:'ok', error:'err'};
+
+window.onStatusUpdate = function(d) {
+  const jobs = d.jobs || [];
+  $('jobs-tbody').innerHTML = jobs.map(j => `
+    <tr>
+      <td style="color:var(--muted);font-size:11px">${j.id}</td>
+      <td>${j.name}</td>
+      <td><span class="badge ${statusCls[j.status]||'muted'}">${j.status}</span></td>
+      <td style="color:var(--muted)">${j.last_run || '—'}</td>
+      <td style="color:var(--muted)">${j.description}</td>
+    </tr>
+  `).join('');
+};
+</script>
+{% endblock %}

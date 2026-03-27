@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %} · Overview{% endblock %}
+
+{% block content %}
+<h1>Overview</h1>
+<p class="subtitle">Unified proxy stack status — auto-refreshes every 5s</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>Server</h2>
+    <div class="val" id="ov-ip">…</div>
+    <p id="ov-os">loading…</p>
+  </div>
+  <div class="card">
+    <h2>MTProxy</h2>
+    <div class="val" id="ov-mt-state">…</div>
+    <p id="ov-mt-port">—</p>
+  </div>
+  <div class="card">
+    <h2>WARP</h2>
+    <div class="val" id="ov-warp-state">…</div>
+    <p id="ov-warp-socks">—</p>
+  </div>
+  <div class="card">
+    <h2>Panel uptime</h2>
+    <div class="val" id="ov-uptime">…</div>
+    <p>seconds since last restart</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>System resources</h2>
+  <table class="kv">
+    <tr><td>Load avg</td><td id="ov-load">—</td></tr>
+    <tr><td>Memory</td>
+      <td>
+        <span id="ov-mem-txt">—</span>
+        <div class="bar-wrap"><div class="bar-fill" id="ov-mem-bar" style="width:0%"></div></div>
+      </td>
+    </tr>
+    <tr><td>Disk (/)</td>
+      <td>
+        <span id="ov-disk-txt">—</span>
+        <div class="bar-wrap"><div class="bar-fill" id="ov-disk-bar" style="width:0%"></div></div>
+      </td>
+    </tr>
+    <tr><td>Host uptime</td><td id="ov-host-uptime">—</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Jobs</h2>
+  <table class="tbl">
+    <thead><tr><th>Job</th><th>Status</th><th>Description</th></tr></thead>
+    <tbody id="ov-jobs"></tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const statusCls = {idle:'muted', planned:'warn', running:'info', ok:'ok', error:'err'};
+
+window.onStatusUpdate = function(d) {
+  const srv = d.server || {};
+  const mt = d.mtproxy || {};
+  const wp = d.warp || {};
+
+  // server card
+  const ipEl = $('ov-ip');
+  ipEl.textContent = srv.ip || '—';
+  ipEl.className = 'val ' + (srv.ip ? 'ok' : 'warn');
+  $('ov-os').textContent = srv.os || '—';
+
+  // mtproxy card
+  const mtEl = $('ov-mt-state');
+  const mtRunning = mt.container_status && mt.container_status !== 'not installed';
+  mtEl.textContent = mt.ok ? (mtRunning ? 'running' : 'installed') : 'unavailable';
+  mtEl.className = 'val ' + (mt.ok ? (mtRunning ? 'ok' : 'warn') : 'err');
+  $('ov-mt-port').textContent = mt.port ? 'port ' + mt.port : '—';
+
+  // warp card
+  const wpEl = $('ov-warp-state');
+  wpEl.textContent = wp.ok ? (wp.connected ? 'connected' : 'disconnected') : 'unavailable';
+  wpEl.className = 'val ' + (wp.ok ? (wp.connected ? 'ok' : 'warn') : 'err');
+  $('ov-warp-socks').textContent = wp.ok ? 'SOCKS ' + (wp.socks_running ? 'up' : 'down') + ' · ' + (wp.socks_host||'') + ':' + (wp.socks_port||'') : '—';
+
+  // panel uptime
+  $('ov-uptime').textContent = d.panel_uptime_s != null ? d.panel_uptime_s + 's' : '—';
+
+  // resources
+  const load = srv.load_avg;
+  $('ov-load').textContent = load && load.length ? load.join(' / ') : '—';
+
+  const mem = srv.mem || {};
+  if (mem.total_mb) {
+    $('ov-mem-txt').textContent = mem.used_mb + ' / ' + mem.total_mb + ' MB (' + mem.used_pct + '%)';
+    const bar = $('ov-mem-bar');
+    bar.style.width = mem.used_pct + '%';
+    bar.className = 'bar-fill' + (mem.used_pct > 85 ? ' err' : mem.used_pct > 65 ? ' warn' : '');
+  }
+
+  const disk = srv.disk || {};
+  if (disk.used_pct) {
+    const pct = parseInt(disk.used_pct);
+    $('ov-disk-txt').textContent = disk.used + ' used, ' + disk.avail + ' free (' + disk.used_pct + ')';
+    const bar = $('ov-disk-bar');
+    bar.style.width = pct + '%';
+    bar.className = 'bar-fill' + (pct > 85 ? ' err' : pct > 65 ? ' warn' : '');
+  }
+
+  const upSec = srv.uptime_s;
+  if (upSec != null) {
+    const h = Math.floor(upSec / 3600), m = Math.floor((upSec % 3600) / 60);
+    $('ov-host-uptime').textContent = h + 'h ' + m + 'm';
+  }
+
+  // jobs
+  const tbody = $('ov-jobs');
+  tbody.innerHTML = (d.jobs || []).map(j =>
+    `<tr><td>${j.name}</td><td><span class="badge ${statusCls[j.status]||'muted'}">${j.status}</span></td><td style="color:var(--muted)">${j.description}</td></tr>`
+  ).join('');
+};
+</script>
+{% endblock %}
