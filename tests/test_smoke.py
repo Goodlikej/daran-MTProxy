@@ -5,15 +5,22 @@ No system calls, no docker, no warp-cli required — runs offline in CI.
 from __future__ import annotations
 
 import json
+import unittest.mock
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from daran_proxy_stack.lib.config import load_config
-from daran_proxy_stack.lib.models import AppConfig, AppPaths, MTProxyConfig, WarpConfig
+from daran_proxy_stack.lib.models import (
+    AppConfig,
+    AppPaths,
+    CascadeConfig,
+    MTProxyConfig,
+    WarpConfig,
+)
 from daran_proxy_stack.lib.shell import CommandResult
-from daran_proxy_stack.modules import mtproxy, warp
+from daran_proxy_stack.modules import cascade, mtproxy, warp
 
 
 # ── Models ─────────────────────────────────────────────────────────────────────
@@ -60,6 +67,12 @@ class TestModels:
         assert cfg.ad_tag is None
         assert cfg.public_host is None
 
+    def test_app_config_cascade_defaults(self):
+        cfg = AppConfig()
+        assert cfg.cascade.enabled is False
+        assert cfg.cascade.mode == "forward"
+        assert cfg.cascade.relay_port == 1080
+
 
 # ── Config loading ─────────────────────────────────────────────────────────────
 
@@ -99,6 +112,17 @@ class TestConfigLoading:
         cfg = load_config(f)
         assert cfg.mtproxy.listen_port == 8443
         assert cfg.mtproxy.workers == 2
+
+    def test_cascade_section_parsed(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        f.write_text(
+            "cascade:\n  relay_host: 10.0.0.1\n  relay_port: 2080\n  enabled: true\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(f)
+        assert cfg.cascade.relay_host == "10.0.0.1"
+        assert cfg.cascade.relay_port == 2080
+        assert cfg.cascade.enabled is True
 
 
 # ── Shell CommandResult ────────────────────────────────────────────────────────
@@ -195,6 +219,351 @@ class TestWarpLogic:
         assert out["config"]["socks_port"] == 40000
 
 
+# ── WARP OS detection (new functions) ─────────────────────────────────────────
+
+class TestWarpOsDetection:
+    """Tests for _detect_os_info and _supported_install_os added in latest commit."""
+
+    def _ok(self, stdout: str) -> CommandResult:
+        return CommandResult(command="...", returncode=0, stdout=stdout, stderr="")
+
+    def _fail(self) -> CommandResult:
+        return CommandResult(command="...", returncode=1, stdout="", stderr="error")
+
+    def test_detect_os_info_ubuntu(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.run", return_value=self._ok("ubuntu jammy")):
+            os_id, codename = warp._detect_os_info()
+        assert os_id == "ubuntu"
+        assert codename == "jammy"
+
+    def test_detect_os_info_debian(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.run", return_value=self._ok("debian bookworm")):
+            os_id, codename = warp._detect_os_info()
+        assert os_id == "debian"
+        assert codename == "bookworm"
+
+    def test_detect_os_info_single_word_no_codename(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.run", return_value=self._ok("alpine")):
+            os_id, codename = warp._detect_os_info()
+        assert os_id == "alpine"
+        assert codename == ""
+
+    def test_detect_os_info_shell_failure_returns_unknown(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.run", return_value=self._fail()):
+            os_id, codename = warp._detect_os_info()
+        assert os_id == "unknown"
+        assert codename == ""
+
+    def test_detect_os_info_empty_stdout_returns_unknown(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.run", return_value=self._ok("")):
+            os_id, codename = warp._detect_os_info()
+        assert os_id == "unknown"
+        assert codename == ""
+
+    def test_supported_install_os_ubuntu(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp._detect_os_info", return_value=("ubuntu", "jammy")):
+            assert warp._supported_install_os() is True
+
+    def test_supported_install_os_debian(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp._detect_os_info", return_value=("debian", "bookworm")):
+            assert warp._supported_install_os() is True
+
+    def test_supported_install_os_arch_rejected(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp._detect_os_info", return_value=("arch", "")):
+            assert warp._supported_install_os() is False
+
+    def test_supported_install_os_unknown_rejected(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp._detect_os_info", return_value=("unknown", "")):
+            assert warp._supported_install_os() is False
+
+    def test_supported_install_os_centos_rejected(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp._detect_os_info", return_value=("centos", "7")):
+            assert warp._supported_install_os() is False
+
+
+# ── WARP action results (offline logic) ───────────────────────────────────────
+
+class TestWarpActions:
+    """Tests for WarpActionResult dataclass and action functions that have
+    offline-decidable paths (no warp-cli, missing tools, wrong host, etc.)."""
+
+    def test_action_result_ok_fields(self):
+        r = warp.WarpActionResult(ok=True, title="Done", body="all good")
+        assert r.ok is True
+        assert r.title == "Done"
+        assert r.body == "all good"
+
+    def test_action_result_fail_fields(self):
+        r = warp.WarpActionResult(ok=False, title="Fail", body="oops")
+        assert r.ok is False
+
+    def test_render_result_panel_green_on_ok(self):
+        from rich.panel import Panel
+        r = warp.WarpActionResult(ok=True, title="OK", body="done")
+        panel = warp.render_result_panel(r)
+        assert isinstance(panel, Panel)
+        assert panel.border_style == "green"
+
+    def test_render_result_panel_red_on_fail(self):
+        from rich.panel import Panel
+        r = warp.WarpActionResult(ok=False, title="Err", body="oops")
+        panel = warp.render_result_panel(r)
+        assert isinstance(panel, Panel)
+        assert panel.border_style == "red"
+
+    def test_is_socks_running_no_pid_file(self, tmp_path):
+        cfg = WarpConfig(state_dir=str(tmp_path))
+        assert warp.is_socks_running(cfg) is False
+
+    def test_is_socks_running_invalid_pid_file(self, tmp_path):
+        cfg = WarpConfig(state_dir=str(tmp_path))
+        (tmp_path / "warp-socks.pid").write_text("not-a-number", encoding="utf-8")
+        assert warp.is_socks_running(cfg) is False
+
+    def test_is_socks_running_nonexistent_proc(self, tmp_path):
+        cfg = WarpConfig(state_dir=str(tmp_path))
+        # PID 999999999 will never exist
+        (tmp_path / "warp-socks.pid").write_text("999999999", encoding="utf-8")
+        assert warp.is_socks_running(cfg) is False
+
+    def test_stop_local_socks_no_pid_file(self, tmp_path):
+        cfg = WarpConfig(state_dir=str(tmp_path))
+        result = warp.stop_local_socks(cfg)
+        assert result.ok is True
+        assert "no running" in result.body
+
+    def test_stop_local_socks_invalid_pid_file(self, tmp_path):
+        cfg = WarpConfig(state_dir=str(tmp_path))
+        (tmp_path / "warp-socks.pid").write_text("bad", encoding="utf-8")
+        result = warp.stop_local_socks(cfg)
+        assert result.ok is False
+        assert "invalid pid" in result.body
+
+    def test_start_local_socks_rejects_non_loopback(self, tmp_path):
+        cfg = WarpConfig(
+            state_dir=str(tmp_path),
+            log_dir=str(tmp_path),
+            socks_host="0.0.0.0",
+        )
+        result = warp.start_local_socks(cfg)
+        assert result.ok is False
+        assert "127.0.0.1" in result.body
+
+    def test_install_warp_cli_already_installed(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.shutil.which", return_value="/usr/bin/warp-cli"):
+            result = warp.install_warp_cli()
+        assert result.ok is True
+        assert "already installed" in result.body
+
+    def test_install_warp_cli_unsupported_os(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.shutil.which", return_value=None), \
+             unittest.mock.patch("daran_proxy_stack.modules.warp._supported_install_os", return_value=False):
+            result = warp.install_warp_cli()
+        assert result.ok is False
+        assert "Debian/Ubuntu" in result.body
+
+    def test_connect_warp_missing_cli(self, tmp_path):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.shutil.which", return_value=None):
+            cfg = WarpConfig(state_dir=str(tmp_path), log_dir=str(tmp_path))
+            result = warp.connect_warp(cfg)
+        assert result.ok is False
+        assert "warp-cli not found" in result.body
+
+    def test_disconnect_warp_missing_cli(self):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.shutil.which", return_value=None):
+            result = warp.disconnect_warp(WarpConfig())
+        assert result.ok is False
+        assert "warp-cli not found" in result.body
+
+    def test_start_local_socks_missing_cloudflared(self, tmp_path):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.shutil.which", return_value=None):
+            cfg = WarpConfig(state_dir=str(tmp_path), log_dir=str(tmp_path))
+            result = warp.start_local_socks(cfg)
+        assert result.ok is False
+        assert "cloudflared not found" in result.body
+
+
+# ── Cascade pure logic ────────────────────────────────────────────────────────
+
+class TestCascadeLogic:
+    def test_cascade_config_defaults(self):
+        cfg = CascadeConfig()
+        assert cfg.relay_host == "127.0.0.1"
+        assert cfg.relay_port == 1080
+        assert cfg.upstream_socks_host == "127.0.0.1"
+        assert cfg.upstream_socks_port == 40000
+        assert cfg.mode == "forward"
+        assert cfg.enabled is False
+
+    def test_cascade_config_port_range_low(self):
+        with pytest.raises(ValidationError):
+            CascadeConfig(relay_port=0)
+
+    def test_cascade_config_port_range_high(self):
+        with pytest.raises(ValidationError):
+            CascadeConfig(relay_port=65536)
+
+    def test_cascade_config_upstream_port_range(self):
+        with pytest.raises(ValidationError):
+            CascadeConfig(upstream_socks_port=0)
+
+    def test_diagnostics_no_config_returns_stub(self):
+        diag = cascade.collect_diagnostics(None)
+        assert diag.config_present is False
+        assert diag.relay_reachable is False
+        assert diag.upstream_reachable is False
+        assert "not yet implemented" in diag.note
+
+    def test_diagnostics_disabled_config_skips_connectivity(self):
+        cfg = CascadeConfig(enabled=False)
+        diag = cascade.collect_diagnostics(cfg)
+        assert diag.config_present is True
+        assert diag.relay_reachable is False
+        assert diag.upstream_reachable is False
+        assert "disabled" in diag.note
+
+    def test_diagnostics_default_dataclass_fields(self):
+        diag = cascade.CascadeDiagnostics()
+        assert diag.config_present is False
+        assert diag.relay_reachable is False
+        assert diag.upstream_reachable is False
+
+    def test_render_summary_returns_panel(self):
+        from rich.panel import Panel
+        cfg = CascadeConfig()
+        panel = cascade.render_summary(cfg, cascade.CascadeDiagnostics())
+        assert isinstance(panel, Panel)
+
+    def test_render_summary_no_diagnostics_returns_panel(self):
+        from rich.panel import Panel
+        cfg = CascadeConfig()
+        panel = cascade.render_summary(cfg)
+        assert isinstance(panel, Panel)
+
+    def test_render_summary_shows_relay_address(self):
+        from rich.console import Console
+        from io import StringIO
+        cfg = CascadeConfig(relay_host="10.0.0.5", relay_port=3128)
+        panel = cascade.render_summary(cfg)
+        buf = StringIO()
+        Console(file=buf, no_color=True, width=120).print(panel)
+        out = buf.getvalue()
+        assert "10.0.0.5" in out
+        assert "3128" in out
+
+    def test_render_summary_disabled_note(self):
+        from rich.console import Console
+        from io import StringIO
+        cfg = CascadeConfig(enabled=False)
+        diag = cascade.collect_diagnostics(cfg)
+        panel = cascade.render_summary(cfg, diag)
+        buf = StringIO()
+        Console(file=buf, no_color=True, width=120).print(panel)
+        assert "disabled" in buf.getvalue()
+
+
+# ── API helper functions (pure, no HTTP) ──────────────────────────────────────
+
+class TestApiHelpers:
+    """Tests for the pure helper functions in web/api.py."""
+
+    def test_known_actions_returns_list(self):
+        from daran_proxy_stack.web.api import _KNOWN_ACTIONS
+        assert isinstance(_KNOWN_ACTIONS, list)
+        assert len(_KNOWN_ACTIONS) > 0
+
+    def test_known_actions_required_keys(self):
+        from daran_proxy_stack.web.api import _KNOWN_ACTIONS
+        for action in _KNOWN_ACTIONS:
+            assert {"id", "name", "module"} <= set(action.keys()), f"action {action.get('id')!r} missing keys"
+
+    def test_known_actions_known_modules(self):
+        from daran_proxy_stack.web.api import _KNOWN_ACTIONS
+        modules = {a["module"] for a in _KNOWN_ACTIONS}
+        assert "warp" in modules
+        assert "cascade" in modules
+
+    def test_known_actions_ids_are_nonempty_strings(self):
+        from daran_proxy_stack.web.api import _KNOWN_ACTIONS
+        for action in _KNOWN_ACTIONS:
+            assert isinstance(action["id"], str)
+            assert action["id"]  # non-empty
+
+
+# ── API HTTP endpoints (requires httpx / starlette TestClient) ─────────────────
+
+@pytest.fixture(scope="module")
+def api_client():
+    pytest.importorskip("httpx")
+    from fastapi.testclient import TestClient
+    from daran_proxy_stack.web.app import app
+    with TestClient(app, raise_server_exceptions=False) as client:
+        yield client
+
+
+class TestWebApiEndpoints:
+    """HTTP-level smoke tests for the /api/v1 routes.
+    Skipped automatically when httpx is not installed."""
+
+    def test_status_returns_200(self, api_client):
+        resp = api_client.get("/api/v1/status")
+        assert resp.status_code == 200
+
+    def test_status_top_level_keys(self, api_client):
+        data = api_client.get("/api/v1/status").json()
+        assert "panel_uptime_s" in data
+        assert "server" in data
+        assert "mtproxy" in data
+        assert "warp" in data
+        assert "jobs" in data
+
+    def test_status_panel_uptime_is_number(self, api_client):
+        data = api_client.get("/api/v1/status").json()
+        assert isinstance(data["panel_uptime_s"], (int, float))
+
+    def test_jobs_endpoint_returns_200(self, api_client):
+        resp = api_client.get("/api/v1/jobs")
+        assert resp.status_code == 200
+
+    def test_jobs_endpoint_returns_list(self, api_client):
+        data = api_client.get("/api/v1/jobs").json()
+        assert isinstance(data, list)
+        assert len(data) > 0
+
+    def test_jobs_endpoint_items_have_id(self, api_client):
+        data = api_client.get("/api/v1/jobs").json()
+        for job in data:
+            assert "id" in job
+
+    def test_warp_endpoint_returns_200(self, api_client):
+        resp = api_client.get("/api/v1/warp")
+        assert resp.status_code == 200
+
+    def test_warp_endpoint_has_ok_key(self, api_client):
+        data = api_client.get("/api/v1/warp").json()
+        assert "ok" in data
+
+    def test_mtproxy_endpoint_returns_200(self, api_client):
+        resp = api_client.get("/api/v1/mtproxy")
+        assert resp.status_code == 200
+
+    def test_mtproxy_endpoint_has_ok_key(self, api_client):
+        data = api_client.get("/api/v1/mtproxy").json()
+        assert "ok" in data
+
+    def test_servers_endpoint_returns_200(self, api_client):
+        resp = api_client.get("/api/v1/servers")
+        assert resp.status_code == 200
+
+    def test_servers_endpoint_has_hostname(self, api_client):
+        data = api_client.get("/api/v1/servers").json()
+        assert "hostname" in data
+
+    def test_root_redirects(self, api_client):
+        resp = api_client.get("/", follow_redirects=False)
+        assert resp.status_code in (301, 302, 307, 308)
+
+
 # ── MTProxy pure logic ────────────────────────────────────────────────────────
 
 class TestMTProxyLogic:
@@ -281,3 +650,144 @@ class TestMTProxyLogic:
         cfg = MTProxyConfig(ad_tag="promo99")
         cmd = mtproxy.render_official_run_command(cfg, secret=self._SECRET)
         assert "-P promo99" in cmd
+
+
+# ── TaskExecutor ───────────────────────────────────────────────────────────────
+
+class TestTaskExecutor:
+    """Pure in-process executor — no system calls."""
+
+    def _fresh(self):
+        from daran_proxy_stack.lib.executor import TaskExecutor
+        return TaskExecutor()
+
+    def test_submit_returns_task_immediately(self):
+        import time
+        ex = self._fresh()
+        task = ex.submit("noop", lambda: (time.sleep(0.05) or "done"))
+        # Returned before the thread finishes
+        assert task.id
+        assert task.name == "noop"
+
+    def test_task_reaches_done(self):
+        import time
+        ex = self._fresh()
+        task = ex.submit("quick", lambda: "all good")
+        deadline = time.monotonic() + 2.0
+        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert task.status.value == "done"
+        assert task.output == "all good"
+
+    def test_task_captures_exception_as_failed(self):
+        import time
+        ex = self._fresh()
+        task = ex.submit("boom", lambda: (_ for _ in ()).throw(RuntimeError("kaboom")))
+        deadline = time.monotonic() + 2.0
+        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert task.status.value == "failed"
+        assert "kaboom" in (task.output or "")
+
+    def test_get_returns_none_for_unknown_id(self):
+        ex = self._fresh()
+        assert ex.get("nonexistent") is None
+
+    def test_list_all_grows_with_submits(self):
+        ex = self._fresh()
+        ex.submit("t1", lambda: "a")
+        ex.submit("t2", lambda: "b")
+        assert len(ex.list_all()) == 2
+
+    def test_get_by_run_id(self):
+        import time
+        ex = self._fresh()
+        task = ex.submit("named", lambda: "result")
+        deadline = time.monotonic() + 2.0
+        while task.status.value == "pending" and time.monotonic() < deadline:
+            time.sleep(0.01)
+        fetched = ex.get(task.id)
+        assert fetched is task
+
+    def test_timestamps_set_after_completion(self):
+        import time
+        ex = self._fresh()
+        task = ex.submit("ts-test", lambda: "ok")
+        deadline = time.monotonic() + 2.0
+        while task.status.value not in ("done", "failed") and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert task.started_at is not None
+        assert task.finished_at is not None
+        assert task.finished_at >= task.started_at
+
+
+# ── Cascade primitives ─────────────────────────────────────────────────────────
+
+class TestCascadePrimitives:
+    def _cfg(self, **kw) -> CascadeConfig:
+        return CascadeConfig(**kw)
+
+    def test_list_relays_returns_one_entry(self):
+        cfg = self._cfg(relay_host="0.0.0.0", relay_port=1080, enabled=True)
+        relays = cascade.list_relays(cfg)
+        assert len(relays) == 1
+        r = relays[0]
+        assert r["relay"] == "0.0.0.0:1080"
+        assert r["enabled"] is True
+
+    def test_list_relays_contains_upstream(self):
+        cfg = self._cfg(upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
+        r = cascade.list_relays(cfg)[0]
+        assert r["upstream_socks"] == "127.0.0.1:40000"
+
+    def test_list_relays_mode_forwarded(self):
+        cfg = self._cfg(mode="chain")
+        assert cascade.list_relays(cfg)[0]["mode"] == "chain"
+
+    def test_render_3proxy_config_contains_parent(self):
+        cfg = self._cfg(upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
+        out = cascade.render_3proxy_config(cfg)
+        assert "parent" in out
+        assert "127.0.0.1" in out
+        assert "40000" in out
+
+    def test_render_3proxy_config_socks_line(self):
+        cfg = self._cfg(relay_host="0.0.0.0", relay_port=1080)
+        out = cascade.render_3proxy_config(cfg)
+        assert "socks" in out
+        assert "1080" in out
+
+    def test_render_systemd_unit_structure(self):
+        cfg = self._cfg()
+        svc = cascade.render_systemd_unit(cfg)
+        assert "[Unit]" in svc
+        assert "[Service]" in svc
+        assert "[Install]" in svc
+        assert "3proxy" in svc
+
+    def test_apply_writes_artifacts(self, tmp_path):
+        cfg = self._cfg(relay_host="0.0.0.0", relay_port=1080,
+                        upstream_socks_host="127.0.0.1", upstream_socks_port=40000)
+        output = cascade.apply(cfg, tmp_path)
+        assert (tmp_path / "cascade" / "3proxy.cfg").exists()
+        assert (tmp_path / "cascade" / "cascade.service").exists()
+        assert (tmp_path / "cascade" / "state.json").exists()
+        assert "relay" in output
+
+    def test_apply_state_json_content(self, tmp_path):
+        import json as _json
+        cfg = self._cfg(relay_port=1081, upstream_socks_port=40001)
+        cascade.apply(cfg, tmp_path)
+        state = _json.loads((tmp_path / "cascade" / "state.json").read_text())
+        assert state["relay_port"] == 1081
+        assert state["upstream_socks_port"] == 40001
+
+    def test_status_dict_keys(self):
+        cfg = self._cfg(enabled=False)
+        with unittest.mock.patch("daran_proxy_stack.modules.cascade._port_open", return_value=False):
+            d = cascade.status_dict(cfg)
+        assert "enabled" in d
+        assert "relay" in d
+        assert "upstream_socks" in d
+        assert "relay_reachable" in d
+        assert "upstream_reachable" in d
