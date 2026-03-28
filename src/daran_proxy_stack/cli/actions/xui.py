@@ -9,10 +9,20 @@ Detection strategy:
   3. Probe web UI at localhost:2053
 
 Install path:
-  Guides the user to run the official installer script in their terminal.
-  We never pipe-to-bash automatically — that's the operator's call.
+  Two backends are available:
 
-Status is always safe (read-only checks), install is guide-only.
+  1. install_guide() — legacy guide-only path (mhsanaei/3x-ui).
+     Shows the command, never executes it automatically.
+
+  2. install_xui_pro_upstream() — TEMPORARY upstream-backed installer.
+     Uses mozaroc/x-ui-pro (https://github.com/mozaroc/x-ui-pro) which adds
+     nginx reverse proxy with REALITY/WebSocket/gRPC/Cloudflare support.
+     Attribution: see vendor/xui-pro/NOTICE.md in this repository.
+     When confirmed, runs the upstream script via the user's shell (root required).
+     This path will be REPLACED once daran-proxy-stack ships its own installer.
+
+We never pipe-to-bash silently — operator confirms before any execution.
+Status is always safe (read-only checks).
 """
 from __future__ import annotations
 
@@ -35,6 +45,20 @@ class ActionResult:
 _XUI_DEFAULT_PORT = 2053
 _XUI_INSTALL_SCRIPT_URL = (
     "https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh"
+)
+
+# ---------------------------------------------------------------------------
+# Upstream backend: mozaroc/x-ui-pro
+# Attribution: vendor/xui-pro/NOTICE.md
+# TEMPORARY — will be replaced by daran-proxy-stack native installer
+# ---------------------------------------------------------------------------
+_XUI_PRO_UPSTREAM_REPO = "https://github.com/mozaroc/x-ui-pro"
+_XUI_PRO_UPSTREAM_SCRIPT_URL = (
+    "https://github.com/mozaroc/x-ui-pro/raw/master/x-ui-pro.sh"
+)
+_XUI_PRO_UPSTREAM_INSTALL_CMD = (
+    "bash <(wget -qO- https://github.com/mozaroc/x-ui-pro/raw/master/x-ui-pro.sh)"
+    " -install yes -panel 1 -ONLY_CF_IP_ALLOW no"
 )
 
 
@@ -181,6 +205,104 @@ def install_guide(confirmed: bool = False) -> ActionResult:
         body,
         tip="Команда не выполнялась автоматически. Скопируйте и запустите вручную.",
     )
+
+
+def install_xui_pro_upstream(confirmed: bool = False) -> ActionResult:
+    """Install 3x-ui via upstream mozaroc/x-ui-pro script.
+
+    TEMPORARY external installer backend.
+    Attribution: mozaroc/x-ui-pro — https://github.com/mozaroc/x-ui-pro
+    See vendor/xui-pro/NOTICE.md for full attribution details.
+
+    This will be replaced when daran-proxy-stack ships its own installer.
+
+    confirmed=False → show preview with source URL and what the script does.
+    confirmed=True  → launch the upstream script in the user's shell (root req).
+    """
+    # Pre-check: already installed?
+    unit_exists, _ = _detect_xui_systemd()
+    binary = _detect_xui_binary()
+    if binary or unit_exists:
+        return ActionResult(
+            True,
+            "3x-ui (x-ui-pro): установка",
+            f"3x-ui уже установлен: {binary or 'systemd unit найден'}.\n\n"
+            "Используйте «Статус» для проверки состояния.",
+        )
+
+    _attribution_block = (
+        "┌─ Upstream Attribution ──────────────────────────────────────────┐\n"
+        "│  Скрипт: mozaroc/x-ui-pro                                       │\n"
+        f"│  Источник: {_XUI_PRO_UPSTREAM_REPO:<53}│\n"
+        "│  Статус: ВРЕМЕННЫЙ внешний backend (см. vendor/xui-pro/NOTICE.md)│\n"
+        "└─────────────────────────────────────────────────────────────────┘"
+    )
+
+    if not confirmed:
+        body = (
+            f"{_attribution_block}\n\n"
+            "Установка 3x-ui выполняется через upstream скрипт mozaroc/x-ui-pro.\n"
+            "Этот скрипт добавляет:\n"
+            "  • nginx reverse proxy (REALITY + WebSocket/gRPC/SplitHttp)\n"
+            "  • Автообновление SSL через Cloudflare\n"
+            "  • Случайные порты и пути (безопасность)\n"
+            "  • Поддержку VLESS, VMess, Trojan, Shadowsocks\n\n"
+            "Команда, которая будет выполнена:\n\n"
+            f"  {_XUI_PRO_UPSTREAM_INSTALL_CMD}\n\n"
+            f"[yellow]⚠ Источник: {_XUI_PRO_UPSTREAM_SCRIPT_URL}[/yellow]\n"
+            "[yellow]⚠ Требуется root. Скрипт запрашивает два домена/субдомена.[/yellow]\n"
+            "[yellow]⚠ Запуск выполняется в вашей shell — убедитесь в доверии к источнику.[/yellow]"
+        )
+        return ActionResult(
+            False,
+            "3x-ui (x-ui-pro): предпросмотр установки",
+            body,
+            tip="Нажмите [y] для подтверждения и запуска установщика.",
+        )
+
+    # confirmed=True — check for wget, then exec the upstream script
+    wget = shutil.which("wget")
+    bash = shutil.which("bash")
+    if not wget:
+        return ActionResult(
+            False,
+            "3x-ui (x-ui-pro): ошибка",
+            "wget не найден. Установите wget:\n\n  apt-get install wget\n\n"
+            f"Затем повторите или запустите вручную:\n  {_XUI_PRO_UPSTREAM_INSTALL_CMD}",
+        )
+    if not bash:
+        return ActionResult(
+            False,
+            "3x-ui (x-ui-pro): ошибка",
+            "bash не найден в системе. Невозможно запустить установщик.",
+        )
+
+    # Run via sudo su so the script gets a root shell (matches upstream docs)
+    r = run([
+        "sudo", "su", "-c",
+        f"bash <(wget -qO- {_XUI_PRO_UPSTREAM_SCRIPT_URL})"
+        " -install yes -panel 1 -ONLY_CF_IP_ALLOW no",
+    ])
+
+    if r.ok:
+        body = (
+            f"{_attribution_block}\n\n"
+            "Установщик x-ui-pro завершён.\n\n"
+            f"Вывод:\n{r.stdout or '(пусто)'}\n\n"
+            "После установки:\n"
+            "  • Откройте панель по адресу, указанному скриптом\n"
+            "  • Управление: sudo x-ui  или  sudo systemctl status x-ui"
+        )
+        return ActionResult(True, "3x-ui (x-ui-pro): установка завершена", body)
+    else:
+        body = (
+            f"{_attribution_block}\n\n"
+            "Установщик x-ui-pro завершился с ошибкой.\n\n"
+            f"stdout:\n{r.stdout or '(пусто)'}\n\n"
+            f"stderr:\n{r.stderr or '(пусто)'}\n\n"
+            "Проверьте: наличие root-прав, подключение к интернету, наличие двух доменов."
+        )
+        return ActionResult(False, "3x-ui (x-ui-pro): ошибка установки", body)
 
 
 def service_restart() -> ActionResult:

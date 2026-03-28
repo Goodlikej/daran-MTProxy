@@ -317,7 +317,7 @@ class TestXuiActionsStatus:
 
 
 # ---------------------------------------------------------------------------
-# xui.install_guide()
+# xui.install_guide()  (legacy guide-only path — still present)
 # ---------------------------------------------------------------------------
 
 class TestXuiActionsInstallGuide:
@@ -347,6 +347,96 @@ class TestXuiActionsInstallGuide:
             result = xui_actions.install_guide(confirmed=False)
         assert result.ok
         assert "уже установлен" in result.body
+
+
+# ---------------------------------------------------------------------------
+# xui.install_xui_pro_upstream()  (upstream backend: mozaroc/x-ui-pro)
+# ---------------------------------------------------------------------------
+
+class TestXuiActionsInstallXuiProUpstream:
+    """Tests for the temporary upstream-backed installer (mozaroc/x-ui-pro).
+
+    Attribution: vendor/xui-pro/NOTICE.md
+    This installer path is temporary — will be replaced by native installer.
+    """
+
+    def _patch_detect(self, binary=None, unit_exists=False):
+        return unittest.mock.patch.multiple(
+            "daran_proxy_stack.cli.actions.xui",
+            _detect_xui_systemd=unittest.mock.Mock(return_value=(unit_exists, False)),
+            _detect_xui_binary=unittest.mock.Mock(return_value=binary),
+        )
+
+    def test_unconfirmed_shows_attribution_and_source_url(self):
+        """Preview must show upstream attribution and the exact source URL."""
+        with self._patch_detect():
+            result = xui_actions.install_xui_pro_upstream(confirmed=False)
+        assert not result.ok
+        # Must show attribution
+        assert "mozaroc" in result.body
+        assert "x-ui-pro" in result.body
+        # Must show the upstream source URL
+        assert "github.com/mozaroc/x-ui-pro" in result.body
+        # Must show the install command so operator can inspect it
+        assert "wget" in result.body or "x-ui-pro.sh" in result.body
+        # Must warn about root
+        assert "root" in result.body.lower() or "⚠" in result.body
+
+    def test_unconfirmed_shows_nginx_reality_features(self):
+        """Preview should mention what the script installs."""
+        with self._patch_detect():
+            result = xui_actions.install_xui_pro_upstream(confirmed=False)
+        # Should mention nginx / REALITY in feature list
+        assert "nginx" in result.body.lower() or "reality" in result.body.lower()
+
+    def test_already_installed_returns_ok(self):
+        with self._patch_detect(binary="/usr/local/x-ui/x-ui"):
+            result = xui_actions.install_xui_pro_upstream(confirmed=False)
+        assert result.ok
+        assert "уже установлен" in result.body
+
+    def test_already_installed_unit_only(self):
+        with self._patch_detect(unit_exists=True):
+            result = xui_actions.install_xui_pro_upstream(confirmed=False)
+        assert result.ok
+        assert "уже установлен" in result.body
+
+    def test_confirmed_no_wget(self):
+        """If wget is not found, return error with manual command hint."""
+        with self._patch_detect():
+            with unittest.mock.patch("shutil.which", return_value=None):
+                result = xui_actions.install_xui_pro_upstream(confirmed=True)
+        assert not result.ok
+        assert "wget" in result.body.lower()
+
+    def test_confirmed_runs_upstream_script_success(self):
+        """confirmed=True with wget present should call run() and return ok on success."""
+        from daran_proxy_stack.lib.shell import CommandResult
+        with self._patch_detect():
+            with unittest.mock.patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"):
+                with unittest.mock.patch(
+                    "daran_proxy_stack.cli.actions.xui.run",
+                    return_value=CommandResult("sudo su ...", 0, "Installation complete", ""),
+                ) as mock_run:
+                    result = xui_actions.install_xui_pro_upstream(confirmed=True)
+        assert result.ok
+        assert "завершён" in result.body or "complete" in result.body
+        # The run call must reference the upstream script URL
+        call_args = mock_run.call_args[0][0]
+        assert any("mozaroc" in str(a) or "x-ui-pro" in str(a) for a in call_args)
+
+    def test_confirmed_runs_upstream_script_failure(self):
+        """confirmed=True with script failure should return not ok with error detail."""
+        from daran_proxy_stack.lib.shell import CommandResult
+        with self._patch_detect():
+            with unittest.mock.patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"):
+                with unittest.mock.patch(
+                    "daran_proxy_stack.cli.actions.xui.run",
+                    return_value=CommandResult("sudo su ...", 1, "", "connection refused"),
+                ):
+                    result = xui_actions.install_xui_pro_upstream(confirmed=True)
+        assert not result.ok
+        assert "connection refused" in result.body
 
 
 # ---------------------------------------------------------------------------
@@ -494,14 +584,27 @@ class TestMenu3xuiSubMenuActions:
             self._run(["4", "1", "0", "0"])
 
     def test_xui_install_cancel(self):
-        """Choice '2' → install guide → cancel."""
+        """Choice '2' → upstream install preview → cancel.
+
+        Uses mozaroc/x-ui-pro upstream backend (temporary external installer).
+        Attribution: vendor/xui-pro/NOTICE.md
+        """
         with self._patch_xui_detect():
             self._run(["4", "2", "n", "0", "0"])
 
-    def test_xui_install_confirm_shows_instructions(self):
-        """Choice '2' → install guide → confirm."""
+    def test_xui_install_confirm_runs_upstream(self):
+        """Choice '2' → upstream install → confirm → mock successful run.
+
+        Verifies the menu wires to install_xui_pro_upstream (not install_guide).
+        """
+        from daran_proxy_stack.lib.shell import CommandResult
         with self._patch_xui_detect():
-            self._run(["4", "2", "y", "0", "0"])
+            with unittest.mock.patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"):
+                with unittest.mock.patch(
+                    "daran_proxy_stack.cli.actions.xui.run",
+                    return_value=CommandResult("sudo su ...", 0, "ok", ""),
+                ):
+                    self._run(["4", "2", "y", "0", "0"])
 
     def test_xui_restart_no_systemctl(self):
         """Choice '3' = restart, no systemctl."""

@@ -583,10 +583,14 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
 
 
 def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
-    """Подменю 3x-ui с реальным обнаружением и installer path skeleton."""
+    """Подменю 3x-ui.
+
+    Установка использует upstream mozaroc/x-ui-pro как временный backend.
+    Attribution: vendor/xui-pro/NOTICE.md
+    """
     items = [
         ("1", "Статус  (обнаружение: systemd + process + web-probe)"),
-        ("2", "Установить  (официальный скрипт mhsanaei/3x-ui)"),
+        ("2", "Установить  [upstream: mozaroc/x-ui-pro — nginx+REALITY+WS]"),
         ("3", "Перезапустить  (systemctl restart x-ui)"),
         ("0", "← Назад"),
     ]
@@ -606,10 +610,11 @@ def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
             _show_action_result(result)
 
         elif choice == "2":
-            preview = xui_actions.install_guide(confirmed=False)
+            # Upstream-backed installer: mozaroc/x-ui-pro (temporary external backend)
+            preview = xui_actions.install_xui_pro_upstream(confirmed=False)
             _show_action_result(preview)
             if _ask_confirm(input_fn):
-                result = xui_actions.install_guide(confirmed=True)
+                result = xui_actions.install_xui_pro_upstream(confirmed=True)
                 _show_action_result(result)
             else:
                 console.print("[dim]Отменено.[/dim]")
