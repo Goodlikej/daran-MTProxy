@@ -7,10 +7,14 @@ Apply generates two artifacts under *artifacts_dir*:
   - ``cascade/3proxy.cfg``  — 3proxy chain config (SOCKS5 → upstream SOCKS)
   - ``cascade/cascade.service`` — systemd unit
   - ``cascade/state.json`` — applied config snapshot
+
+Rule management writes to:
+  - ``cascade/rules.json`` — list of managed rules (persisted across sessions)
 """
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -166,3 +170,76 @@ def apply(config: CascadeConfig, artifacts_dir: Path) -> str:
         f"upstream: {config.upstream_socks_host}:{config.upstream_socks_port}",
     ]
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Rule management (managed rules stored in rules.json)
+# ---------------------------------------------------------------------------
+
+def _rules_path(artifacts_dir: Path) -> Path:
+    return artifacts_dir / "cascade" / "rules.json"
+
+
+def load_rules(artifacts_dir: Path) -> list[dict]:
+    """Load managed rules from rules.json. Returns [] if file absent/malformed."""
+    p = _rules_path(artifacts_dir)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, list):
+            return data
+        return []
+    except Exception:
+        return []
+
+
+def save_rules(artifacts_dir: Path, rules: list[dict]) -> None:
+    """Write rules list to rules.json, creating parent dirs as needed."""
+    p = _rules_path(artifacts_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rules, indent=2), encoding="utf-8")
+
+
+def add_rule(
+    artifacts_dir: Path,
+    *,
+    protocol: str,
+    listen_port: int,
+    target_host: str,
+    target_port: int,
+    notes: str = "",
+) -> dict:
+    """Add a new managed rule to rules.json. Returns the created rule dict."""
+    rules = load_rules(artifacts_dir)
+    rule: dict = {
+        "id": f"rule-managed-{uuid.uuid4().hex[:8]}",
+        "protocol": protocol,
+        "listen_port": listen_port,
+        "target_host": target_host,
+        "target_port": target_port,
+        "status": "managed",
+        "notes": notes,
+    }
+    rules.append(rule)
+    save_rules(artifacts_dir, rules)
+    return rule
+
+
+def remove_rule(artifacts_dir: Path, rule_id: str) -> bool:
+    """Remove rule by id from rules.json. Returns True if found and removed."""
+    rules = load_rules(artifacts_dir)
+    before = len(rules)
+    rules = [r for r in rules if r.get("id") != rule_id]
+    if len(rules) == before:
+        return False
+    save_rules(artifacts_dir, rules)
+    return True
+
+
+def reset_rules(artifacts_dir: Path) -> int:
+    """Clear all managed rules from rules.json. Returns count of removed rules."""
+    rules = load_rules(artifacts_dir)
+    count = len(rules)
+    save_rules(artifacts_dir, [])
+    return count

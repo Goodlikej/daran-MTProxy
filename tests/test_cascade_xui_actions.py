@@ -610,3 +610,314 @@ class TestMenu3xuiSubMenuActions:
         """Choice '3' = restart, no systemctl."""
         with unittest.mock.patch("shutil.which", return_value=None):
             self._run(["4", "3", "0", "0"])
+
+
+# ---------------------------------------------------------------------------
+# cascade rule management: modules/cascade primitives
+# ---------------------------------------------------------------------------
+
+class TestCascadeRuleManagementPrimitives:
+    """Unit tests for load_rules / save_rules / add_rule / remove_rule / reset_rules."""
+
+    def test_load_rules_empty_when_no_file(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import load_rules
+        assert load_rules(tmp_path) == []
+
+    def test_load_rules_malformed_file_returns_empty(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import load_rules
+        (tmp_path / "cascade").mkdir()
+        (tmp_path / "cascade" / "rules.json").write_text("not json", encoding="utf-8")
+        assert load_rules(tmp_path) == []
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import save_rules, load_rules
+        rules = [{"id": "r1", "protocol": "tcp", "listen_port": 1234, "target_host": "10.0.0.1", "target_port": 5678, "status": "managed", "notes": ""}]
+        save_rules(tmp_path, rules)
+        loaded = load_rules(tmp_path)
+        assert loaded == rules
+
+    def test_add_rule_creates_entry(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule, load_rules
+        rule = add_rule(tmp_path, protocol="tcp", listen_port=1080, target_host="127.0.0.1", target_port=40000)
+        assert rule["protocol"] == "tcp"
+        assert rule["listen_port"] == 1080
+        assert rule["target_host"] == "127.0.0.1"
+        assert rule["target_port"] == 40000
+        assert rule["id"].startswith("rule-managed-")
+        rules = load_rules(tmp_path)
+        assert len(rules) == 1
+        assert rules[0]["id"] == rule["id"]
+
+    def test_add_rule_accumulates(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule, load_rules
+        add_rule(tmp_path, protocol="tcp", listen_port=1080, target_host="a.b", target_port=8080)
+        add_rule(tmp_path, protocol="udp", listen_port=1081, target_host="c.d", target_port=9090)
+        assert len(load_rules(tmp_path)) == 2
+
+    def test_remove_rule_found(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule, remove_rule, load_rules
+        rule = add_rule(tmp_path, protocol="tcp", listen_port=1234, target_host="x", target_port=4567)
+        removed = remove_rule(tmp_path, rule["id"])
+        assert removed is True
+        assert load_rules(tmp_path) == []
+
+    def test_remove_rule_not_found(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import remove_rule
+        removed = remove_rule(tmp_path, "nonexistent-id")
+        assert removed is False
+
+    def test_reset_rules_clears_all(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule, reset_rules, load_rules
+        add_rule(tmp_path, protocol="tcp", listen_port=1, target_host="h", target_port=2)
+        add_rule(tmp_path, protocol="tcp", listen_port=3, target_host="h", target_port=4)
+        count = reset_rules(tmp_path)
+        assert count == 2
+        assert load_rules(tmp_path) == []
+
+    def test_reset_rules_empty(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import reset_rules
+        count = reset_rules(tmp_path)
+        assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# cascade.list_managed_rules() action
+# ---------------------------------------------------------------------------
+
+class TestCascadeActionsListManagedRules:
+    def test_no_rules(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.list_managed_rules()
+        assert result.ok
+        assert "нет" in result.body.lower()
+
+    def test_with_rules(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule
+        add_rule(tmp_path, protocol="tcp", listen_port=1234, target_host="10.0.0.1", target_port=5678, notes="test rule")
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.list_managed_rules()
+        assert result.ok
+        assert ":1234" in result.body
+        assert "10.0.0.1:5678" in result.body
+        assert "test rule" in result.body
+
+
+# ---------------------------------------------------------------------------
+# cascade.add_rule() action
+# ---------------------------------------------------------------------------
+
+class TestCascadeActionsAddRule:
+    def test_unconfirmed_returns_preview(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.add_rule(
+                protocol="tcp", listen_port=1080, target_host="127.0.0.1",
+                target_port=40000, confirmed=False,
+            )
+        assert not result.ok
+        assert "1080" in result.body
+        assert "127.0.0.1" in result.body
+
+    def test_confirmed_writes_rule(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.add_rule(
+                protocol="tcp", listen_port=1080, target_host="127.0.0.1",
+                target_port=40000, notes="test", confirmed=True,
+            )
+        assert result.ok
+        assert "rule-managed-" in result.body
+        # rule should be in file
+        from daran_proxy_stack.modules.cascade import load_rules
+        rules = load_rules(tmp_path)
+        assert len(rules) == 1
+        assert rules[0]["listen_port"] == 1080
+
+    def test_invalid_protocol(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.add_rule(
+                protocol="ftp", listen_port=80, target_host="x", target_port=80, confirmed=False,
+            )
+        assert not result.ok
+        assert "Неверный протокол" in result.body
+
+    def test_invalid_listen_port(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.add_rule(
+                protocol="tcp", listen_port=99999, target_host="x", target_port=80, confirmed=False,
+            )
+        assert not result.ok
+        assert "порт" in result.body.lower()
+
+    def test_empty_target_host(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.add_rule(
+                protocol="tcp", listen_port=1080, target_host="", target_port=80, confirmed=False,
+            )
+        assert not result.ok
+        assert "хост" in result.body.lower()
+
+
+# ---------------------------------------------------------------------------
+# cascade.remove_rule() action
+# ---------------------------------------------------------------------------
+
+class TestCascadeActionsRemoveRule:
+    def test_rule_not_found_returns_not_ok(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.remove_rule("nonexistent-id", confirmed=False)
+        assert not result.ok
+        assert "не найдено" in result.body
+
+    def test_unconfirmed_shows_preview(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule
+        rule = add_rule(tmp_path, protocol="tcp", listen_port=1234, target_host="x.y", target_port=9)
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.remove_rule(rule["id"], confirmed=False)
+        assert not result.ok
+        assert rule["id"] in result.body
+        assert ":1234" in result.body
+
+    def test_confirmed_removes_rule(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule, load_rules
+        rule = add_rule(tmp_path, protocol="tcp", listen_port=4321, target_host="a.b", target_port=7)
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.remove_rule(rule["id"], confirmed=True)
+        assert result.ok
+        assert rule["id"] in result.body
+        assert load_rules(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# cascade.reset_rules() action
+# ---------------------------------------------------------------------------
+
+class TestCascadeActionsResetRules:
+    def test_no_rules_returns_ok_immediately(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.reset_rules(confirmed=False)
+        assert result.ok
+        assert "нечего" in result.body
+
+    def test_unconfirmed_shows_destructive_warning(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule
+        add_rule(tmp_path, protocol="tcp", listen_port=1, target_host="h", target_port=2)
+        add_rule(tmp_path, protocol="tcp", listen_port=3, target_host="h", target_port=4)
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.reset_rules(confirmed=False)
+        assert not result.ok
+        # Should mention count and destructive nature
+        assert "2" in result.body
+        assert "⚠" in result.body or "необратимо" in result.body
+
+    def test_confirmed_clears_rules(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule, load_rules
+        add_rule(tmp_path, protocol="tcp", listen_port=1, target_host="h", target_port=2)
+        add_rule(tmp_path, protocol="tcp", listen_port=3, target_host="h", target_port=4)
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.reset_rules(confirmed=True)
+        assert result.ok
+        assert "2" in result.body
+        assert load_rules(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# Menu integration: new Cascade rule management submenu choices (6/7/8/9)
+# ---------------------------------------------------------------------------
+
+class TestMenuCascadeRuleManagementFlow:
+    """Smoke-test new rule management items 6/7/8/9 in Cascade submenu."""
+
+    def _run(self, choices: list[str], tmp_path):
+        inputs = deque(choices)
+        with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
+            with unittest.mock.patch(
+                "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+                return_value=tmp_path,
+            ):
+                from daran_proxy_stack.cli.menu import run_menu
+                run_menu(input_fn=lambda: inputs.popleft())
+
+    def test_list_managed_rules_empty(self, tmp_path):
+        """Choice 6 = list managed rules, no rules."""
+        self._run(["2", "6", "0", "0"], tmp_path)
+
+    def test_add_rule_cancel(self, tmp_path):
+        """Choice 7 = add rule flow, cancel at confirm."""
+        # protocol / listen_port / target_host / target_port / notes / confirm=n
+        self._run(["2", "7", "tcp", "1080", "127.0.0.1", "40000", "", "n", "0", "0"], tmp_path)
+
+    def test_add_rule_confirm(self, tmp_path):
+        """Choice 7 = add rule flow, confirm."""
+        self._run(["2", "7", "tcp", "1080", "127.0.0.1", "40000", "", "y", "0", "0"], tmp_path)
+        from daran_proxy_stack.modules.cascade import load_rules
+        rules = load_rules(tmp_path)
+        assert len(rules) == 1
+        assert rules[0]["listen_port"] == 1080
+
+    def test_remove_rule_no_rules(self, tmp_path):
+        """Choice 8 = remove rule, no rules — should just show empty list and return."""
+        self._run(["2", "8", "0", "0"], tmp_path)
+
+    def test_remove_rule_confirm(self, tmp_path):
+        """Choice 8 = remove rule flow, confirm removal."""
+        from daran_proxy_stack.modules.cascade import add_rule
+        rule = add_rule(tmp_path, protocol="tcp", listen_port=4321, target_host="x", target_port=7)
+        # list_managed_rules → enter rule_id → confirm
+        self._run(["2", "8", rule["id"], "y", "0", "0"], tmp_path)
+        from daran_proxy_stack.modules.cascade import load_rules
+        assert load_rules(tmp_path) == []
+
+    def test_reset_rules_cancel(self, tmp_path):
+        """Choice 9 = reset rules, cancel."""
+        from daran_proxy_stack.modules.cascade import add_rule
+        add_rule(tmp_path, protocol="tcp", listen_port=1, target_host="h", target_port=2)
+        self._run(["2", "9", "n", "0", "0"], tmp_path)
+        # Rules should still exist
+        from daran_proxy_stack.modules.cascade import load_rules
+        assert len(load_rules(tmp_path)) == 1
+
+    def test_reset_rules_confirm(self, tmp_path):
+        """Choice 9 = reset rules, confirm."""
+        from daran_proxy_stack.modules.cascade import add_rule
+        add_rule(tmp_path, protocol="tcp", listen_port=1, target_host="h", target_port=2)
+        self._run(["2", "9", "y", "0", "0"], tmp_path)
+        from daran_proxy_stack.modules.cascade import load_rules
+        assert load_rules(tmp_path) == []

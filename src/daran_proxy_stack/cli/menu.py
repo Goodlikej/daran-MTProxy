@@ -422,6 +422,94 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
             console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
 
 
+def _prompt(label: str, input_fn: Callable[[], str], default: str = "") -> str:
+    """Print a prompt label and read one line. Returns default on empty input."""
+    hint = f" [{default}]" if default else ""
+    console.print(f"  [cyan]{label}{hint}:[/cyan] ", end="")
+    try:
+        val = input_fn().strip()
+        return val if val else default
+    except (EOFError, KeyboardInterrupt):
+        return default
+
+
+def _run_cascade_add_rule(input_fn: Callable[[], str]) -> None:
+    """Interactive flow: collect rule params, preview, confirm, write."""
+    console.print(Panel(
+        "Введите параметры нового правила.\n"
+        "  Протокол: tcp / udp / both\n"
+        "  Порт прослушивания: 1–65535\n"
+        "  Целевой хост и порт\n"
+        "  Заметка (необязательно)",
+        title="Cascade: добавить правило",
+        border_style="blue",
+        expand=False,
+    ))
+
+    protocol = _prompt("Протокол (tcp/udp/both)", input_fn, "tcp")
+    listen_port_str = _prompt("Порт прослушивания", input_fn, "1080")
+    target_host = _prompt("Целевой хост", input_fn, "127.0.0.1")
+    target_port_str = _prompt("Целевой порт", input_fn, "40000")
+    notes = _prompt("Заметка (Enter — пропустить)", input_fn, "")
+
+    try:
+        listen_port = int(listen_port_str)
+        target_port = int(target_port_str)
+    except ValueError:
+        console.print("[red]Ошибка: порт должен быть числом.[/red]")
+        return
+
+    preview = cascade_actions.add_rule(
+        protocol=protocol,
+        listen_port=listen_port,
+        target_host=target_host,
+        target_port=target_port,
+        notes=notes,
+        confirmed=False,
+    )
+    _show_action_result(preview)
+
+    if preview.ok is False and "Неверный" not in preview.body and "не указан" not in preview.body:
+        # It's a preview (not a validation error) — ask confirm
+        if _ask_confirm(input_fn):
+            result = cascade_actions.add_rule(
+                protocol=protocol,
+                listen_port=listen_port,
+                target_host=target_host,
+                target_port=target_port,
+                notes=notes,
+                confirmed=True,
+            )
+            _show_action_result(result)
+        else:
+            console.print("[dim]Отменено.[/dim]")
+
+
+def _run_cascade_remove_rule(input_fn: Callable[[], str]) -> None:
+    """Interactive flow: show list, ask for ID, preview, confirm, remove."""
+    # First show current list
+    list_result = cascade_actions.list_managed_rules()
+    _show_action_result(list_result)
+
+    if "нет" in list_result.body.lower() or "нет." in list_result.body.lower():
+        return
+
+    rule_id = _prompt("ID правила для удаления", input_fn, "")
+    if not rule_id:
+        console.print("[dim]Отменено.[/dim]")
+        return
+
+    preview = cascade_actions.remove_rule(rule_id, confirmed=False)
+    _show_action_result(preview)
+
+    if preview.ok is False and "не найдено" not in preview.body:
+        if _ask_confirm(input_fn):
+            result = cascade_actions.remove_rule(rule_id, confirmed=True)
+            _show_action_result(result)
+        else:
+            console.print("[dim]Отменено.[/dim]")
+
+
 def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
     """Подменю Cascade с реальными действиями."""
     items = [
@@ -430,6 +518,10 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
         ("3", "Показать конфигурацию (сгенерированные файлы)"),
         ("4", "Применить конфиг  (записать 3proxy.cfg + .service + state.json)"),
         ("5", "Установить 3proxy  (инструкция)"),
+        ("6", "Управление правилами: список (rules.json)"),
+        ("7", "Управление правилами: добавить правило"),
+        ("8", "Управление правилами: удалить правило"),
+        ("9", "Управление правилами: сбросить все  ⚠"),
         ("u", "Обновить данные"),
         ("0", "← Назад"),
     ]
@@ -467,6 +559,27 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
         elif choice == "5":
             result = cascade_actions.install_3proxy_guide()
             _show_action_result(result)
+
+        elif choice == "6":
+            result = cascade_actions.list_managed_rules()
+            _show_action_result(result)
+
+        elif choice == "7":
+            _run_cascade_add_rule(input_fn)
+
+        elif choice == "8":
+            _run_cascade_remove_rule(input_fn)
+
+        elif choice == "9":
+            preview = cascade_actions.reset_rules(confirmed=False)
+            _show_action_result(preview)
+            if not preview.ok:
+                # There are rules to reset — ask confirm
+                if _ask_confirm(input_fn):
+                    result = cascade_actions.reset_rules(confirmed=True)
+                    _show_action_result(result)
+                else:
+                    console.print("[dim]Отменено.[/dim]")
 
         elif choice in ("u", "U"):
             state = cmd_rediscover()

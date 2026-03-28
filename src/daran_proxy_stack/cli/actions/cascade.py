@@ -189,6 +189,191 @@ def apply_config(confirmed: bool = False) -> ActionResult:
     )
 
 
+def list_managed_rules() -> ActionResult:
+    """List rules from managed rules.json (written by add_rule/reset_rules)."""
+    artifacts_dir = _find_artifacts_dir()
+    rules = cascade_mod.load_rules(artifacts_dir)
+    rules_path = artifacts_dir / "cascade" / "rules.json"
+
+    if not rules:
+        return ActionResult(
+            True,
+            "Cascade: управляемые правила",
+            f"Файл правил: {rules_path}\n\n"
+            "Управляемых правил нет.\n\n"
+            "Используйте «Добавить правило» для создания нового правила.",
+        )
+
+    lines = [f"Файл правил: {rules_path}", f"Всего правил: {len(rules)}", ""]
+    for r in rules:
+        lines.append(
+            f"  [{r['id']}] "
+            f"{r['protocol'].upper()} :{r['listen_port']} → {r['target_host']}:{r['target_port']}"
+            f"  [{r.get('status', '?')}]"
+        )
+        if r.get("notes"):
+            lines.append(f"      {r['notes']}")
+
+    return ActionResult(True, "Cascade: управляемые правила", "\n".join(lines))
+
+
+def add_rule(
+    protocol: str,
+    listen_port: int,
+    target_host: str,
+    target_port: int,
+    notes: str = "",
+    confirmed: bool = False,
+) -> ActionResult:
+    """Add a managed rule to rules.json.
+
+    When confirmed=False, returns a preview. When confirmed=True, writes the rule.
+    """
+    # Validate inputs
+    if protocol not in ("tcp", "udp", "both"):
+        return ActionResult(
+            False, "Cascade: добавить правило",
+            f"Неверный протокол: {protocol!r}. Допустимые: tcp, udp, both."
+        )
+    if not (1 <= listen_port <= 65535):
+        return ActionResult(
+            False, "Cascade: добавить правило",
+            f"Неверный порт прослушивания: {listen_port}. Допустимый диапазон: 1–65535."
+        )
+    if not (1 <= target_port <= 65535):
+        return ActionResult(
+            False, "Cascade: добавить правило",
+            f"Неверный целевой порт: {target_port}. Допустимый диапазон: 1–65535."
+        )
+    if not target_host:
+        return ActionResult(
+            False, "Cascade: добавить правило",
+            "Целевой хост не указан."
+        )
+
+    artifacts_dir = _find_artifacts_dir()
+
+    if not confirmed:
+        return ActionResult(
+            False,
+            "Cascade: добавить правило",
+            f"Будет добавлено в {artifacts_dir / 'cascade' / 'rules.json'}:\n\n"
+            f"  Протокол:  {protocol.upper()}\n"
+            f"  Порт:      :{listen_port}\n"
+            f"  Цель:      {target_host}:{target_port}\n"
+            f"  Заметка:   {notes or '—'}\n\n"
+            "Правило сохраняется только в rules.json.\n"
+            "Для применения в iptables потребуется ручная конфигурация системы.",
+            tip="Нажмите [y] для подтверждения.",
+        )
+
+    try:
+        rule = cascade_mod.add_rule(
+            artifacts_dir,
+            protocol=protocol,
+            listen_port=listen_port,
+            target_host=target_host,
+            target_port=target_port,
+            notes=notes,
+        )
+    except Exception as exc:
+        return ActionResult(False, "Cascade: добавить правило", f"Ошибка записи: {exc}")
+
+    return ActionResult(
+        True,
+        "Cascade: правило добавлено",
+        f"ID:       {rule['id']}\n"
+        f"Протокол: {rule['protocol'].upper()}\n"
+        f"Порт:     :{rule['listen_port']}\n"
+        f"Цель:     {rule['target_host']}:{rule['target_port']}\n"
+        f"Заметка:  {rule.get('notes') or '—'}",
+    )
+
+
+def remove_rule(rule_id: str, confirmed: bool = False) -> ActionResult:
+    """Remove a managed rule by id from rules.json.
+
+    When confirmed=False, returns a preview. When confirmed=True, removes the rule.
+    """
+    artifacts_dir = _find_artifacts_dir()
+    rules = cascade_mod.load_rules(artifacts_dir)
+
+    target = next((r for r in rules if r.get("id") == rule_id), None)
+    if target is None:
+        return ActionResult(
+            False,
+            "Cascade: удалить правило",
+            f"Правило с ID {rule_id!r} не найдено в rules.json.\n\n"
+            "Используйте «Список правил» для просмотра актуальных ID.",
+        )
+
+    if not confirmed:
+        return ActionResult(
+            False,
+            "Cascade: удалить правило",
+            f"Будет удалено:\n\n"
+            f"  ID:       {target['id']}\n"
+            f"  Протокол: {target['protocol'].upper()}\n"
+            f"  Порт:     :{target['listen_port']}\n"
+            f"  Цель:     {target['target_host']}:{target['target_port']}\n",
+            tip="Нажмите [y] для подтверждения.",
+        )
+
+    try:
+        removed = cascade_mod.remove_rule(artifacts_dir, rule_id)
+    except Exception as exc:
+        return ActionResult(False, "Cascade: удалить правило", f"Ошибка записи: {exc}")
+
+    if removed:
+        return ActionResult(
+            True,
+            "Cascade: правило удалено",
+            f"Правило {rule_id!r} удалено из rules.json.",
+        )
+    return ActionResult(
+        False,
+        "Cascade: удалить правило",
+        f"Правило {rule_id!r} не найдено (возможно уже удалено).",
+    )
+
+
+def reset_rules(confirmed: bool = False) -> ActionResult:
+    """Clear all managed rules from rules.json.
+
+    When confirmed=False, returns a preview with current count.
+    When confirmed=True, removes all rules (destructive).
+    """
+    artifacts_dir = _find_artifacts_dir()
+    rules = cascade_mod.load_rules(artifacts_dir)
+
+    if not confirmed:
+        if not rules:
+            return ActionResult(
+                True,
+                "Cascade: сброс правил",
+                "Управляемых правил нет — сбрасывать нечего.",
+            )
+        return ActionResult(
+            False,
+            "Cascade: сброс правил",
+            f"⚠ Будут удалены ВСЕ {len(rules)} управляемых правила из rules.json.\n\n"
+            "Это действие необратимо для файла rules.json.\n"
+            "(Системные правила iptables не затрагиваются.)",
+            tip="Нажмите [y] для подтверждения.",
+        )
+
+    try:
+        count = cascade_mod.reset_rules(artifacts_dir)
+    except Exception as exc:
+        return ActionResult(False, "Cascade: сброс правил", f"Ошибка записи: {exc}")
+
+    return ActionResult(
+        True,
+        "Cascade: правила сброшены",
+        f"Удалено правил: {count}. Файл rules.json очищен.",
+    )
+
+
 def show_config() -> ActionResult:
     """Show contents of generated config files if they exist."""
     artifacts_dir = _find_artifacts_dir()
