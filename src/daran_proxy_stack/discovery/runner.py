@@ -15,6 +15,7 @@ from daran_proxy_stack.discovery.host import discover_host
 from daran_proxy_stack.discovery.modules.cascade import detect_cascade
 from daran_proxy_stack.discovery.modules.mtproxy import detect_mtproxy
 from daran_proxy_stack.discovery.modules.warp import detect_warp
+from daran_proxy_stack.discovery.modules.xui import detect_xui
 from daran_proxy_stack.discovery.schema import (
     DiscoveryConfidence,
     DiscoveryMeta,
@@ -96,6 +97,24 @@ def run_discovery() -> ObservedState:
         partial_modules.append("cascade")
         global_warnings.append(f"cascade detector exception: {exc}")
 
+    # ── 3x-ui ─────────────────────────────────────────────────────────────
+    try:
+        xui_state = detect_xui()
+        if xui_state.confidence == DiscoveryConfidence.partial:
+            partial_modules.append("xui")
+    except Exception as exc:
+        from daran_proxy_stack.discovery.modules.xui import XuiState
+        from daran_proxy_stack.discovery.schema import ModuleHealth, ModuleManager
+        xui_state = XuiState(
+            installed=False, enabled=False, running=False,
+            health=ModuleHealth.unknown, version=None, manager=ModuleManager.none,
+            errors=[f"detector crashed: {exc}"],
+            confidence=DiscoveryConfidence.none,
+            last_checked_at=now,
+        )
+        partial_modules.append("xui")
+        global_warnings.append(f"xui detector exception: {exc}")
+
     # ── Discovery meta ────────────────────────────────────────────────────
     meta_status = "ok" if not partial_modules else "partial"
     meta = DiscoveryMeta(
@@ -112,6 +131,7 @@ def run_discovery() -> ObservedState:
         warp=warp_state,
         mtproxy=mtproxy_state,
         cascade=cascade_state,
+        xui=xui_state,
     )
 
 

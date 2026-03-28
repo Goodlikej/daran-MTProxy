@@ -172,10 +172,11 @@ class ObservedState:
     warp: Any | None = None      # WarpState
     mtproxy: Any | None = None   # MTProxyState
     cascade: Any | None = None   # CascadeState
+    xui: Any | None = None       # XuiState  (3x-ui web panel)
 
     def to_dict(self) -> dict:
         modules: dict = {}
-        for key in ("warp", "mtproxy", "cascade"):
+        for key in ("warp", "mtproxy", "cascade", "xui"):
             val = getattr(self, key)
             modules[key] = val.to_dict() if val is not None else None
         return {

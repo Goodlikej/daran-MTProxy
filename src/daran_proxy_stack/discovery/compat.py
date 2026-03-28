@@ -54,6 +54,7 @@ _MODULE_LABELS: dict[str, str] = {
     "warp":     "Cloudflare WARP",
     "mtproxy":  "MTProxy (Telegram)",
     "cascade":  "Cascade Relay",
+    "xui":      "3x-ui (Xray Panel)",
 }
 
 
@@ -135,6 +136,13 @@ def _module_to_service(name: str, state: Any) -> dict:
         if rules:
             meta["rules_count"] = len(rules)
 
+    elif name == "xui":
+        binary_path = d.get("binary_path")
+        if binary_path:
+            meta["binary_path"] = binary_path
+        if d.get("web_ui_responding"):
+            meta["web_ui_port"] = d.get("web_ui_port", 2053)
+
     return {
         "name": name,
         "label": _MODULE_LABELS.get(name, name.title()),
@@ -156,7 +164,7 @@ def observed_state_to_inventory_dict(observed_state: Any) -> dict:
 
     services = []
     # Ordered by importance for UI display
-    for module_name in ("warp", "mtproxy", "cascade"):
+    for module_name in ("warp", "mtproxy", "cascade", "xui"):
         module_state = getattr(observed_state, module_name, None)
         services.append(_module_to_service(module_name, module_state))
 

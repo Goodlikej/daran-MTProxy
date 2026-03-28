@@ -536,6 +536,131 @@ class TestCascadeDetection:
 
 
 # ---------------------------------------------------------------------------
+# 3x-ui detection
+# ---------------------------------------------------------------------------
+
+class TestXuiDetection:
+    def test_not_installed_no_binary_no_unit(self):
+        from daran_proxy_stack.discovery.modules.xui import detect_xui
+        with unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_binary",
+                                  return_value=None), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_systemd",
+                                  return_value=(False, False)):
+            state = detect_xui()
+        assert state.installed is False
+        assert state.health == ModuleHealth.not_installed
+        assert state.confidence == DiscoveryConfidence.full
+        assert state.running is False
+        assert state.binary_path is None
+
+    def test_healthy_systemd_active_web_up(self):
+        from daran_proxy_stack.discovery.modules.xui import detect_xui
+        with unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_binary",
+                                  return_value="/usr/local/x-ui/x-ui"), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_systemd",
+                                  return_value=(True, True)), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_service_enabled",
+                                  return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_process",
+                                  return_value=False), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._probe_web_ui",
+                                  return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_version",
+                                  return_value="2.3.11"):
+            state = detect_xui()
+        assert state.installed is True
+        assert state.running is True
+        assert state.enabled is True
+        assert state.health == ModuleHealth.healthy
+        assert state.web_ui_responding is True
+        assert state.version == "2.3.11"
+        assert state.binary_path == "/usr/local/x-ui/x-ui"
+        assert len(state.ports) == 1
+        assert state.ports[0].port == 2053
+        assert state.ports[0].purpose == "web-ui"
+
+    def test_stopped_unit_exists_but_not_active_no_web(self):
+        from daran_proxy_stack.discovery.modules.xui import detect_xui
+        with unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_binary",
+                                  return_value="/usr/local/x-ui/x-ui"), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_systemd",
+                                  return_value=(True, False)), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_service_enabled",
+                                  return_value=False), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_process",
+                                  return_value=False), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._probe_web_ui",
+                                  return_value=False), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_version",
+                                  return_value=None):
+            state = detect_xui()
+        assert state.installed is True
+        assert state.running is False
+        assert state.health == ModuleHealth.stopped
+        assert state.web_ui_responding is False
+        assert len(state.ports) == 0
+
+    def test_degraded_running_but_web_not_responding(self):
+        from daran_proxy_stack.discovery.modules.xui import detect_xui
+        with unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_binary",
+                                  return_value="/usr/local/x-ui/x-ui"), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_systemd",
+                                  return_value=(True, True)), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_service_enabled",
+                                  return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_process",
+                                  return_value=False), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._probe_web_ui",
+                                  return_value=False), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_version",
+                                  return_value=None):
+            state = detect_xui()
+        assert state.installed is True
+        assert state.running is True
+        assert state.health == ModuleHealth.degraded
+        assert any("web UI" in w for w in state.warnings)
+
+    def test_process_only_no_systemd_healthy(self):
+        from daran_proxy_stack.discovery.modules.xui import detect_xui
+        with unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_binary",
+                                  return_value="/usr/local/x-ui/x-ui"), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_systemd",
+                                  return_value=(False, False)), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_service_enabled",
+                                  return_value=False), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_process",
+                                  return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._probe_web_ui",
+                                  return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_version",
+                                  return_value=None):
+            state = detect_xui()
+        assert state.installed is True
+        assert state.running is True
+        assert state.health == ModuleHealth.healthy
+        assert state.manager == ModuleManager.process
+
+    def test_to_dict_structure(self):
+        from daran_proxy_stack.discovery.modules.xui import detect_xui
+        with unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_binary",
+                                  return_value=None), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.xui._detect_xui_systemd",
+                                  return_value=(False, False)):
+            state = detect_xui()
+        d = state.to_dict()
+        assert "installed" in d
+        assert "running" in d
+        assert "health" in d
+        assert "manager" in d
+        assert "ports" in d
+        assert "confidence" in d
+        assert "last_checked_at" in d
+        assert "binary_path" in d
+        assert "web_ui_responding" in d
+        assert "web_ui_port" in d
+
+
+# ---------------------------------------------------------------------------
 # Runner (ObservedState assembly)
 # ---------------------------------------------------------------------------
 
@@ -557,6 +682,7 @@ class TestRunner:
         from daran_proxy_stack.discovery.modules.warp import WarpState
         from daran_proxy_stack.discovery.modules.mtproxy import MTProxyState
         from daran_proxy_stack.discovery.modules.cascade import CascadeState
+        from daran_proxy_stack.discovery.modules.xui import XuiState
 
         from daran_proxy_stack.discovery.schema import ModuleHealth, ModuleManager
         now = datetime.now(timezone.utc).isoformat()
@@ -570,13 +696,17 @@ class TestRunner:
         fake_cas = CascadeState(installed=False, enabled=False, running=False,
                                 health=ModuleHealth.not_installed, version=None,
                                 manager=ModuleManager.none, last_checked_at=now)
+        fake_xui = XuiState(installed=False, enabled=False, running=False,
+                            health=ModuleHealth.not_installed, version=None,
+                            manager=ModuleManager.none, last_checked_at=now)
         fake_host = HostState(os="ubuntu", version="24.04",
                               public_ip="1.2.3.4", hostname="node-1")
 
         with unittest.mock.patch("daran_proxy_stack.discovery.runner.discover_host", return_value=fake_host), \
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_warp", return_value=fake_warp), \
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_mtproxy", return_value=fake_mtp), \
-             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas):
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas), \
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_xui", return_value=fake_xui):
             state = run_discovery()
 
         assert isinstance(state, ObservedState)
@@ -585,6 +715,7 @@ class TestRunner:
         assert state.warp is not None
         assert state.mtproxy is not None
         assert state.cascade is not None
+        assert state.xui is not None
 
     def test_discovery_dict_is_serialisable(self):
         import json
@@ -593,6 +724,7 @@ class TestRunner:
         from daran_proxy_stack.discovery.modules.warp import WarpState
         from daran_proxy_stack.discovery.modules.mtproxy import MTProxyState
         from daran_proxy_stack.discovery.modules.cascade import CascadeState
+        from daran_proxy_stack.discovery.modules.xui import XuiState
 
         now = datetime.now(timezone.utc).isoformat()
         fake_warp = WarpState(installed=False, enabled=False, running=False,
@@ -604,13 +736,17 @@ class TestRunner:
         fake_cas = CascadeState(installed=False, enabled=False, running=False,
                                 health=ModuleHealth.not_installed, version=None,
                                 manager=ModuleManager.none, last_checked_at=now)
+        fake_xui = XuiState(installed=False, enabled=False, running=False,
+                            health=ModuleHealth.not_installed, version=None,
+                            manager=ModuleManager.none, last_checked_at=now)
         fake_host = HostState(os="ubuntu", version="24.04",
                               public_ip="1.2.3.4", hostname="node-1")
 
         with unittest.mock.patch("daran_proxy_stack.discovery.runner.discover_host", return_value=fake_host), \
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_warp", return_value=fake_warp), \
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_mtproxy", return_value=fake_mtp), \
-             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas):
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas), \
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_xui", return_value=fake_xui):
             d = discovery_dict()
 
         # Must be JSON-serialisable
@@ -624,12 +760,14 @@ class TestRunner:
         assert "warp" in parsed["modules"]
         assert "mtproxy" in parsed["modules"]
         assert "cascade" in parsed["modules"]
+        assert "xui" in parsed["modules"]
 
     def test_run_discovery_tolerates_warp_detector_crash(self):
         from daran_proxy_stack.discovery.runner import run_discovery
         from daran_proxy_stack.discovery.schema import HostState, ModuleHealth
         from daran_proxy_stack.discovery.modules.mtproxy import MTProxyState
         from daran_proxy_stack.discovery.modules.cascade import CascadeState
+        from daran_proxy_stack.discovery.modules.xui import XuiState
         from daran_proxy_stack.discovery.schema import ModuleManager
 
         now = datetime.now(timezone.utc).isoformat()
@@ -639,6 +777,9 @@ class TestRunner:
         fake_cas = CascadeState(installed=False, enabled=False, running=False,
                                 health=ModuleHealth.not_installed, version=None,
                                 manager=ModuleManager.none, last_checked_at=now)
+        fake_xui = XuiState(installed=False, enabled=False, running=False,
+                            health=ModuleHealth.not_installed, version=None,
+                            manager=ModuleManager.none, last_checked_at=now)
         fake_host = HostState(os="ubuntu", version="24.04",
                               public_ip="1.2.3.4", hostname="node-1")
 
@@ -646,7 +787,8 @@ class TestRunner:
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_warp",
                                   side_effect=RuntimeError("warp detector kaboom")), \
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_mtproxy", return_value=fake_mtp), \
-             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas):
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas), \
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_xui", return_value=fake_xui):
             state = run_discovery()
 
         assert state.warp is not None  # fallback created, not None
@@ -660,6 +802,7 @@ class TestRunner:
         from daran_proxy_stack.discovery.modules.warp import WarpState
         from daran_proxy_stack.discovery.modules.mtproxy import MTProxyState
         from daran_proxy_stack.discovery.modules.cascade import CascadeState
+        from daran_proxy_stack.discovery.modules.xui import XuiState
 
         now = datetime.now(timezone.utc).isoformat()
         fake_warp = WarpState(installed=False, enabled=False, running=False,
@@ -674,13 +817,18 @@ class TestRunner:
                                 health=ModuleHealth.not_installed, version=None,
                                 manager=ModuleManager.none, last_checked_at=now,
                                 confidence=DiscoveryConfidence.full)
+        fake_xui = XuiState(installed=False, enabled=False, running=False,
+                            health=ModuleHealth.not_installed, version=None,
+                            manager=ModuleManager.none, last_checked_at=now,
+                            confidence=DiscoveryConfidence.full)
         fake_host = HostState(os="ubuntu", version="24.04",
                               public_ip="1.2.3.4", hostname="node-1")
 
         with unittest.mock.patch("daran_proxy_stack.discovery.runner.discover_host", return_value=fake_host), \
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_warp", return_value=fake_warp), \
              unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_mtproxy", return_value=fake_mtp), \
-             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas):
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_cascade", return_value=fake_cas), \
+             unittest.mock.patch("daran_proxy_stack.discovery.runner.detect_xui", return_value=fake_xui):
             state = run_discovery()
 
         assert state.discovery.status == "ok"
@@ -705,6 +853,8 @@ class TestCompatAdapter:
         from daran_proxy_stack.discovery.modules.mtproxy import MTProxyState
         from daran_proxy_stack.discovery.modules.cascade import CascadeState
 
+        from daran_proxy_stack.discovery.modules.xui import XuiState
+
         now = datetime.now(timezone.utc).isoformat()
         fake_warp = WarpState(installed=False, enabled=False, running=False,
                               health=ModuleHealth.not_installed, version=None,
@@ -715,10 +865,14 @@ class TestCompatAdapter:
         fake_cas = CascadeState(installed=False, enabled=False, running=False,
                                 health=ModuleHealth.not_installed, version=None,
                                 manager=ModuleManager.none, last_checked_at=now)
+        fake_xui = XuiState(installed=False, enabled=False, running=False,
+                            health=ModuleHealth.not_installed, version=None,
+                            manager=ModuleManager.none, last_checked_at=now)
         host = HostState(os="ubuntu", version="24.04", public_ip="1.2.3.4", hostname="node-1")
         meta = DiscoveryMeta(last_run_at=now, status="ok")
         return ObservedState(schema_version="1.0", host=host, discovery=meta,
-                             warp=fake_warp, mtproxy=fake_mtp, cascade=fake_cas)
+                             warp=fake_warp, mtproxy=fake_mtp, cascade=fake_cas,
+                             xui=fake_xui)
 
     def test_inventory_dict_top_level_keys(self):
         from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
@@ -731,15 +885,15 @@ class TestCompatAdapter:
         from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
         state = self._make_observed_state()
         d = observed_state_to_inventory_dict(state)
-        assert d["count"] == 3
-        assert len(d["services"]) == 3
+        assert d["count"] == 4
+        assert len(d["services"]) == 4
 
     def test_inventory_dict_service_names(self):
         from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
         state = self._make_observed_state()
         d = observed_state_to_inventory_dict(state)
         names = {s["name"] for s in d["services"]}
-        assert names == {"warp", "mtproxy", "cascade"}
+        assert names == {"warp", "mtproxy", "cascade", "xui"}
 
     def test_inventory_dict_service_fields(self):
         from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict

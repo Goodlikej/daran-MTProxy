@@ -140,6 +140,7 @@ def render_modules_table(state: ObservedState) -> Table:
         "warp": state.warp,
         "mtproxy": state.mtproxy,
         "cascade": state.cascade,
+        "xui": state.xui,
     }
     for name, mod in module_map.items():
         if mod is None:
@@ -280,7 +281,7 @@ def cmd_view_modules(state: ObservedState | None) -> None:
         console.print("[yellow]Нет данных discovery. Сначала запустите «Обновить статус».[/yellow]")
         return
     console.print()
-    for name in ("warp", "mtproxy", "cascade"):
+    for name in ("warp", "mtproxy", "cascade", "xui"):
         mod = getattr(state, name, None)
         console.print(render_module_detail(name, mod))
 
@@ -595,11 +596,8 @@ def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
         ("0", "← Назад"),
     ]
     while True:
-        _print_submenu(
-            "3x-ui",
-            items,
-            status_line=Text("○ внешний модуль — не в discovery", style="dim"),
-        )
+        badge = _module_status_badge("xui", state)
+        _print_submenu("3x-ui", items, status_line=badge)
         try:
             choice = input_fn()
         except (EOFError, KeyboardInterrupt):
@@ -642,16 +640,12 @@ def _print_main_menu(state: ObservedState | None) -> None:
         ("1", "MTProxy", "mtproxy"),
         ("2", "Cascade", "cascade"),
         ("3", "WARP", "warp"),
-        ("4", "3x-ui", None),  # no discovery slot yet
+        ("4", "3x-ui", "xui"),
     ]
 
     for key, label, attr in modules_info:
-        if attr is not None:
-            badge = _module_status_badge(attr, state)
-            badge_str = badge.plain
-        else:
-            # 3x-ui: no discovery data yet
-            badge_str = "○ не обнаружен"
+        badge = _module_status_badge(attr, state)
+        badge_str = badge.plain
         # Pad label to align badges
         label_padded = f"{label:<12}"
         lines.append(f"  [{key}] {label_padded}  {badge_str}")
