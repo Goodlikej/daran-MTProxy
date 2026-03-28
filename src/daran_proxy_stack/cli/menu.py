@@ -39,6 +39,8 @@ from daran_proxy_stack.discovery.schema import (
     ModuleHealth,
     ObservedState,
 )
+from daran_proxy_stack.cli.actions import warp as warp_actions
+from daran_proxy_stack.cli.actions import mtproxy as mtproxy_actions
 
 console = Console()
 
@@ -322,15 +324,35 @@ def _wip_action(action_name: str) -> None:
     ))
 
 
+def _ask_confirm(input_fn: Callable[[], str]) -> bool:
+    """Ask user for y/n confirmation. Returns True if confirmed."""
+    console.print("  [bold yellow]Подтвердить? [y/N]:[/bold yellow] ", end="")
+    try:
+        answer = input_fn().strip().lower()
+        return answer in ("y", "yes", "да", "д")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _show_action_result(result) -> None:
+    """Display an ActionResult panel."""
+    border = "green" if result.ok else "red"
+    body = result.body
+    if result.tip:
+        body += f"\n\n[dim]{result.tip}[/dim]"
+    console.print(Panel(body, title=result.title, border_style=border, expand=False))
+
+
 def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
-    """Подменю MTProxy."""
+    """Подменю MTProxy с реальными действиями."""
     items = [
-        ("1", "Статус"),
-        ("2", "Установить  (official build + systemd)"),
-        ("3", "Удалить"),
-        ("4", "Перезапустить"),
-        ("5", "Показать tg-ссылку"),
-        ("6", "Обновить данные"),
+        ("1", "Статус (discovery)"),
+        ("2", "Диагностика системы"),
+        ("3", "Установить  (official build + systemd)"),
+        ("4", "Удалить"),
+        ("5", "Перезапустить"),
+        ("6", "Показать tg-ссылку"),
+        ("7", "Обновить данные"),
         ("0", "← Назад"),
     ]
     while True:
@@ -343,64 +365,54 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
 
         if choice == "1":
             _submenu_status("mtproxy", state)
+
         elif choice == "2":
-            console.print(Panel(
-                "[cyan]Официальная установка MTProxy:[/cyan]\n\n"
-                "  daran-net mtproxy official-install\n\n"
-                "Или пошагово:\n"
-                "  daran-net mtproxy official-build --yes\n"
-                "  daran-net mtproxy official-fetch --yes\n"
-                "  daran-net mtproxy systemd-apply --yes\n\n"
-                "[dim]Запустите нужную команду в отдельном терминале.[/dim]",
-                title="Установка MTProxy",
-                border_style="cyan",
-                expand=False,
-            ))
+            result = mtproxy_actions.status()
+            _show_action_result(result)
+
         elif choice == "3":
-            console.print(Panel(
-                "[red]Удаление MTProxy:[/red]\n\n"
-                "  sudo systemctl stop MTProxy\n"
-                "  sudo systemctl disable MTProxy\n"
-                "  sudo rm /etc/systemd/system/MTProxy.service\n"
-                "  sudo systemctl daemon-reload\n\n"
-                "[dim]Или для Docker-варианта:[/dim]\n"
-                "  daran-net mtproxy remove",
-                title="Удаление MTProxy",
-                border_style="red",
-                expand=False,
-            ))
+            result = mtproxy_actions.install_guide()
+            _show_action_result(result)
+
         elif choice == "4":
-            console.print(Panel(
-                "[yellow]Перезапуск MTProxy:[/yellow]\n\n"
-                "  sudo systemctl restart MTProxy\n\n"
-                "[dim]Или для Docker-варианта:[/dim]\n"
-                "  daran-net mtproxy restart",
-                title="Перезапуск MTProxy",
-                border_style="yellow",
-                expand=False,
-            ))
+            # Show plan first
+            preview = mtproxy_actions.uninstall(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = mtproxy_actions.uninstall(confirmed=True)
+                _show_action_result(result)
+                if result.ok:
+                    state = cmd_rediscover()
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "5":
+            result = mtproxy_actions.restart()
+            _show_action_result(result)
+
+        elif choice == "6":
+            # First try from discovery state
             if state and state.mtproxy:
                 d = state.mtproxy.to_dict()
                 ca = d.get("client_artifacts")
                 if ca and ca.get("tg_link"):
                     console.print(Panel(
-                        f"[green]{ca['tg_link']}[/green]",
+                        f"[green]{ca['tg_link']}[/green]\n\n[dim](из discovery)[/dim]",
                         title="MTProxy tg-ссылка",
                         border_style="green",
                         expand=False,
                     ))
                 else:
-                    console.print(Panel(
-                        "tg-ссылка недоступна. Запустите:\n  daran-net mtproxy tg-link",
-                        title="MTProxy tg-ссылка",
-                        border_style="yellow",
-                        expand=False,
-                    ))
+                    # Fallback to artifacts
+                    result = mtproxy_actions.show_tg_link()
+                    _show_action_result(result)
             else:
-                console.print("[yellow]MTProxy не обнаружен или нет данных.[/yellow]")
-        elif choice == "6":
+                result = mtproxy_actions.show_tg_link()
+                _show_action_result(result)
+
+        elif choice == "7":
             state = cmd_rediscover()
+
         elif choice == "0":
             break
         else:
@@ -442,17 +454,18 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
 
 
 def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
-    """Подменю WARP."""
+    """Подменю WARP с реальными действиями."""
     items = [
-        ("1", "Статус"),
-        ("2", "Установить  (warp-cli)"),
-        ("3", "Удалить"),
-        ("4", "Подключить"),
-        ("5", "Отключить"),
-        ("6", "SOCKS прокси: включить"),
-        ("7", "SOCKS прокси: выключить"),
-        ("8", "Показать Xray outbound JSON"),
-        ("9", "Обновить данные"),
+        ("1", "Статус (discovery)"),
+        ("2", "Диагностика системы"),
+        ("3", "Установить warp-cli"),
+        ("4", "Удалить warp-cli"),
+        ("5", "Подключить WARP"),
+        ("6", "Отключить WARP"),
+        ("7", "SOCKS прокси: включить"),
+        ("8", "SOCKS прокси: выключить"),
+        ("9", "Показать Xray outbound JSON"),
+        ("u", "Обновить данные"),
         ("0", "← Назад"),
     ]
     while True:
@@ -465,54 +478,81 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
 
         if choice == "1":
             _submenu_status("warp", state)
+
         elif choice == "2":
-            console.print(Panel(
-                "[cyan]Установка WARP:[/cyan]\n\n"
-                "  daran-net warp install\n\n"
-                "[dim]Запустите команду в отдельном терминале.[/dim]",
-                title="Установка WARP",
-                border_style="cyan",
-                expand=False,
-            ))
+            result = warp_actions.status()
+            _show_action_result(result)
+
         elif choice == "3":
-            _wip_action("Удалить WARP")
+            # Show plan, ask confirm
+            preview = warp_actions.install(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = warp_actions.install(confirmed=True)
+                _show_action_result(result)
+                if result.ok:
+                    state = cmd_rediscover()
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "4":
-            console.print(Panel(
-                "  daran-net warp connect",
-                title="Подключить WARP",
-                border_style="green",
-                expand=False,
-            ))
+            preview = warp_actions.uninstall(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = warp_actions.uninstall(confirmed=True)
+                _show_action_result(result)
+                if result.ok:
+                    state = cmd_rediscover()
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "5":
-            console.print(Panel(
-                "  daran-net warp disconnect",
-                title="Отключить WARP",
-                border_style="yellow",
-                expand=False,
-            ))
+            preview = warp_actions.connect(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = warp_actions.connect(confirmed=True)
+                _show_action_result(result)
+                if result.ok:
+                    state = cmd_rediscover()
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "6":
-            console.print(Panel(
-                "  daran-net warp socks-up",
-                title="WARP SOCKS: включить",
-                border_style="green",
-                expand=False,
-            ))
+            preview = warp_actions.disconnect(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = warp_actions.disconnect(confirmed=True)
+                _show_action_result(result)
+                if result.ok:
+                    state = cmd_rediscover()
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "7":
-            console.print(Panel(
-                "  daran-net warp socks-down",
-                title="WARP SOCKS: выключить",
-                border_style="yellow",
-                expand=False,
-            ))
+            preview = warp_actions.socks_up(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = warp_actions.socks_up(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "8":
-            console.print(Panel(
-                "  daran-net warp xray-json\n  daran-net warp xray-json --save",
-                title="Xray outbound JSON",
-                border_style="cyan",
-                expand=False,
-            ))
+            preview = warp_actions.socks_down(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = warp_actions.socks_down(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "9":
+            result = warp_actions.xray_info()
+            _show_action_result(result)
+
+        elif choice in ("u", "U"):
             state = cmd_rediscover()
+
         elif choice == "0":
             break
         else:
