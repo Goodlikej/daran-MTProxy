@@ -38,8 +38,10 @@ from daran_proxy_stack.modules.warp import (
 app = typer.Typer(help="Daran network toolkit for MTProxy, WARP, and relay/cascade scenarios.")
 warp_app = typer.Typer(help="Manage Cloudflare WARP helper services.")
 mtproxy_app = typer.Typer(help="Manage Telegram MTProxy helpers.")
+cascade_app = typer.Typer(help="Manage Cascade relay rules and config artifacts.")
 app.add_typer(warp_app, name="warp")
 app.add_typer(mtproxy_app, name="mtproxy")
+app.add_typer(cascade_app, name="cascade")
 console = Console()
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -527,6 +529,154 @@ def panel(
         port=port,
         reload=reload,
     )
+
+
+def _cascade_print(result: object) -> None:
+    """Print an ActionResult from cli.actions.cascade to the console."""
+    border = "green" if result.ok else "yellow"  # type: ignore[attr-defined]
+    console.print(Panel.fit(result.body, title=result.title, border_style=border))  # type: ignore[attr-defined]
+    if result.tip:  # type: ignore[attr-defined]
+        console.print(f"[dim]{result.tip}[/dim]")  # type: ignore[attr-defined]
+
+
+@cascade_app.command("status")
+def cascade_status(
+    config: Optional[Path] = typer.Option(None, help="Optional config path."),
+) -> None:
+    """Show Cascade relay diagnostics: connectivity, discovery, active rules."""
+    from daran_proxy_stack.cli.actions.cascade import status
+    _cascade_print(status())
+
+
+@cascade_app.command("list-rules")
+def cascade_list_rules(
+    config: Optional[Path] = typer.Option(None, help="Optional config path."),
+) -> None:
+    """List observed cascade rules (iptables discovery)."""
+    from daran_proxy_stack.cli.actions.cascade import list_rules
+    _cascade_print(list_rules())
+
+
+@cascade_app.command("managed-rules")
+def cascade_managed_rules(
+    config: Optional[Path] = typer.Option(None, help="Optional config path."),
+) -> None:
+    """List managed rules stored in rules.json."""
+    from daran_proxy_stack.cli.actions.cascade import list_managed_rules
+    _cascade_print(list_managed_rules())
+
+
+@cascade_app.command("add-rule")
+def cascade_add_rule(
+    protocol: str = typer.Argument(help="Protocol: tcp | udp | both"),
+    listen_port: int = typer.Argument(help="Local listen port (1-65535)"),
+    target_host: str = typer.Argument(help="Target host or IP"),
+    target_port: int = typer.Argument(help="Target port (1-65535)"),
+    notes: str = typer.Option("", "--notes", help="Optional human-readable notes for the rule."),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt and write rule immediately."),
+    config: Optional[Path] = typer.Option(None, help="Optional config path."),
+) -> None:
+    """Add a managed port-forward rule to rules.json."""
+    from daran_proxy_stack.cli.actions.cascade import add_rule
+    if not yes:
+        preview = add_rule(
+            protocol=protocol,
+            listen_port=listen_port,
+            target_host=target_host,
+            target_port=target_port,
+            notes=notes,
+            confirmed=False,
+        )
+        _cascade_print(preview)
+        # Validation errors have no tip; previews always have one.
+        if not preview.ok and not preview.tip:  # type: ignore[attr-defined]
+            raise typer.Exit(code=1)
+        confirm = typer.confirm("Add this rule?", default=False)
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+    result = add_rule(
+        protocol=protocol,
+        listen_port=listen_port,
+        target_host=target_host,
+        target_port=target_port,
+        notes=notes,
+        confirmed=True,
+    )
+    _cascade_print(result)
+    if not result.ok:  # type: ignore[attr-defined]
+        raise typer.Exit(code=1)
+
+
+@cascade_app.command("remove-rule")
+def cascade_remove_rule(
+    rule_id: str = typer.Argument(help="Rule ID to remove (from managed-rules output)."),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt and remove immediately."),
+    config: Optional[Path] = typer.Option(None, help="Optional config path."),
+) -> None:
+    """Remove a managed rule from rules.json by ID."""
+    from daran_proxy_stack.cli.actions.cascade import remove_rule
+    if not yes:
+        preview = remove_rule(rule_id, confirmed=False)
+        _cascade_print(preview)
+        # Not-found error has no tip; preview always has one.
+        if not preview.ok and not preview.tip:  # type: ignore[attr-defined]
+            raise typer.Exit(code=1)
+        confirm = typer.confirm("Remove this rule?", default=False)
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+    result = remove_rule(rule_id, confirmed=True)
+    _cascade_print(result)
+    if not result.ok:  # type: ignore[attr-defined]
+        raise typer.Exit(code=1)
+
+
+@cascade_app.command("reset-rules")
+def cascade_reset_rules(
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation prompt and clear all rules immediately."),
+    config: Optional[Path] = typer.Option(None, help="Optional config path."),
+) -> None:
+    """Clear ALL managed rules from rules.json (destructive)."""
+    from daran_proxy_stack.cli.actions.cascade import reset_rules
+    if not yes:
+        result = reset_rules(confirmed=False)
+        _cascade_print(result)
+        if not result.ok:
+            confirm = typer.confirm("Reset ALL rules?", default=False)
+            if not confirm:
+                console.print("[yellow]Aborted.[/yellow]")
+                raise typer.Exit(code=0)
+        else:
+            # ok=True means no rules — nothing to do
+            raise typer.Exit(code=0)
+    result = reset_rules(confirmed=True)
+    _cascade_print(result)
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
+@cascade_app.command("apply")
+def cascade_apply(
+    config: Optional[Path] = typer.Option(None, help="Optional config path."),
+    yes: bool = typer.Option(False, "--yes", help="Skip dry-run and write artifacts immediately."),
+) -> None:
+    """Generate cascade config artifacts (3proxy.cfg, cascade.service, state.json).
+
+    Dry-run by default. Pass --yes to actually write files to disk.
+    """
+    from daran_proxy_stack.cli.actions.cascade import apply_config
+    if not yes:
+        result = apply_config(confirmed=False, config_path=config)
+        _cascade_print(result)
+        confirm = typer.confirm("Apply (write artifacts)?", default=False)
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+    result = apply_config(confirmed=True, config_path=config)
+    _cascade_print(result)
+    if not result.ok:
+        raise typer.Exit(code=1)
 
 
 if __name__ == "__main__":
