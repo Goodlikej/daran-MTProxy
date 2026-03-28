@@ -35,13 +35,15 @@ from daran_proxy_stack.modules.warp import (
     stop_local_socks,
 )
 
-app = typer.Typer(help="Daran network toolkit for MTProxy, WARP, and relay/cascade scenarios.")
+app = typer.Typer(help="Daran network toolkit for MTProxy, WARP, 3x-ui, and relay/cascade scenarios.")
 warp_app = typer.Typer(help="Manage Cloudflare WARP helper services.")
 mtproxy_app = typer.Typer(help="Manage Telegram MTProxy helpers.")
 cascade_app = typer.Typer(help="Manage Cascade relay rules and config artifacts.")
+xui_app = typer.Typer(help="Manage 3x-ui (Xray-based web panel).")
 app.add_typer(warp_app, name="warp")
 app.add_typer(mtproxy_app, name="mtproxy")
 app.add_typer(cascade_app, name="cascade")
+app.add_typer(xui_app, name="xui")
 console = Console()
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -172,6 +174,26 @@ def warp_debug_json(config: Optional[Path] = typer.Option(None, help="Optional c
     cfg = load_config(config)
     diagnostics = collect_diagnostics(cfg.warp)
     console.print(render_debug_json(cfg.warp, diagnostics))
+
+
+@warp_app.command("uninstall")
+def warp_uninstall(yes: bool = typer.Option(False, "--yes", help="Skip confirmation and remove warp-cli immediately.")) -> None:
+    """Uninstall Cloudflare WARP (warp-cli)."""
+    from daran_proxy_stack.cli.actions.warp import uninstall
+    if not yes:
+        result = uninstall(confirmed=False)
+        console.print(Panel.fit(result.body, title=result.title, border_style="yellow"))
+        if result.tip:
+            console.print(f"[dim]{result.tip}[/dim]")
+        confirm = typer.confirm("Uninstall WARP?", default=False)
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+    result = uninstall(confirmed=True)
+    border = "green" if result.ok else "red"
+    console.print(Panel.fit(result.body, title=result.title, border_style=border))
+    if not result.ok:
+        raise typer.Exit(code=1)
 
 
 @mtproxy_app.command("status")
@@ -456,6 +478,29 @@ def mtproxy_remove(config: Optional[Path] = typer.Option(None, help="Optional co
     console.print(Panel.fit(commands["remove"], title="Run this to remove MTProxy", border_style="red"))
 
 
+@mtproxy_app.command("uninstall")
+def mtproxy_uninstall(
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation and uninstall MTProxy service immediately."),
+) -> None:
+    """Uninstall MTProxy service (systemd unit + binary, or docker container)."""
+    from daran_proxy_stack.cli.actions.mtproxy import uninstall
+    if not yes:
+        result = uninstall(confirmed=False)
+        border = "yellow" if not result.ok else "green"
+        console.print(Panel.fit(result.body, title=result.title, border_style=border))
+        if result.tip:
+            console.print(f"[dim]{result.tip}[/dim]")
+        confirm = typer.confirm("Uninstall MTProxy?", default=False)
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+    result = uninstall(confirmed=True)
+    border = "green" if result.ok else "red"
+    console.print(Panel.fit(result.body, title=result.title, border_style=border))
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
 @mtproxy_app.command("logs")
 def mtproxy_logs(config: Optional[Path] = typer.Option(None, help="Optional config path.")) -> None:
     cfg = load_config(config)
@@ -485,6 +530,73 @@ def mtproxy_plan() -> None:
         title="MTProxy MVP plan",
         border_style="yellow",
     ))
+
+
+def _xui_print(result: object) -> None:
+    """Print an ActionResult from cli.actions.xui to the console."""
+    border = "green" if result.ok else "yellow"  # type: ignore[attr-defined]
+    console.print(Panel.fit(result.body, title=result.title, border_style=border))  # type: ignore[attr-defined]
+    if result.tip:  # type: ignore[attr-defined]
+        console.print(f"[dim]{result.tip}[/dim]")  # type: ignore[attr-defined]
+
+
+@xui_app.command("status")
+def xui_status() -> None:
+    """Detect 3x-ui installation and runtime state."""
+    from daran_proxy_stack.cli.actions.xui import status
+    _xui_print(status())
+
+
+@xui_app.command("install")
+def xui_install(
+    yes: bool = typer.Option(False, "--yes", help="Show confirmed install command (copy-paste ready)."),
+) -> None:
+    """Show installation guide for 3x-ui (mhsanaei/3x-ui). Never executes automatically."""
+    from daran_proxy_stack.cli.actions.xui import install_guide
+    if not yes:
+        result = install_guide(confirmed=False)
+        _xui_print(result)
+        if not result.ok and result.tip:
+            confirm = typer.confirm("Show full install command?", default=False)
+            if not confirm:
+                console.print("[yellow]Aborted.[/yellow]")
+                raise typer.Exit(code=0)
+        else:
+            raise typer.Exit(code=0)
+    result = install_guide(confirmed=True)
+    _xui_print(result)
+
+
+@xui_app.command("install-pro")
+def xui_install_pro(
+    yes: bool = typer.Option(False, "--yes", help="Actually run the upstream x-ui-pro installer (requires root)."),
+) -> None:
+    """Install 3x-ui via upstream mozaroc/x-ui-pro script (nginx + REALITY support).
+
+    Dry-run by default. Pass --yes to execute upstream script (requires root).
+    """
+    from daran_proxy_stack.cli.actions.xui import install_xui_pro_upstream
+    if not yes:
+        result = install_xui_pro_upstream(confirmed=False)
+        _xui_print(result)
+        confirm = typer.confirm("Run x-ui-pro installer now?", default=False)
+        if not confirm:
+            console.print("[yellow]Aborted.[/yellow]")
+            raise typer.Exit(code=0)
+    result = install_xui_pro_upstream(confirmed=True)
+    _xui_print(result)
+    if not result.ok:
+        raise typer.Exit(code=1)
+
+
+@xui_app.command("restart")
+def xui_restart() -> None:
+    """Restart the x-ui systemd service."""
+    from daran_proxy_stack.cli.actions.xui import service_restart
+    result = service_restart()
+    _xui_print(result)
+    if not result.ok:
+        raise typer.Exit(code=1)
 
 
 @app.command("menu")
