@@ -1107,3 +1107,144 @@ class TestCascadeManagedRulesIntegration:
             result = cascade_actions.apply_config(confirmed=True)
         assert result.ok
         assert "2" in result.body
+
+
+# ---------------------------------------------------------------------------
+# load_cascade_config — config.yaml integration
+# ---------------------------------------------------------------------------
+
+class TestLoadCascadeConfig:
+    """Tests for the load_cascade_config() helper and _find_config_yaml() discovery."""
+
+    def test_defaults_when_no_config(self, tmp_path):
+        """Returns CascadeConfig() defaults when no config.yaml exists."""
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_config_yaml",
+            return_value=None,
+        ):
+            cfg, source = cascade_actions.load_cascade_config()
+        assert cfg.relay_port == 1080
+        assert cfg.upstream_socks_port == 40000
+        assert cfg.enabled is False
+        assert "defaults" in source
+
+    def test_loads_cascade_from_config_yaml(self, tmp_path):
+        """Reads real values from a config.yaml with cascade section."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "cascade:\n"
+            "  relay_host: 10.0.0.1\n"
+            "  relay_port: 2080\n"
+            "  upstream_socks_host: 10.0.0.2\n"
+            "  upstream_socks_port: 50000\n"
+            "  mode: chain\n"
+            "  enabled: true\n",
+            encoding="utf-8",
+        )
+        cfg, source = cascade_actions.load_cascade_config(config_path=config_yaml)
+        assert cfg.relay_host == "10.0.0.1"
+        assert cfg.relay_port == 2080
+        assert cfg.upstream_socks_host == "10.0.0.2"
+        assert cfg.upstream_socks_port == 50000
+        assert cfg.mode == "chain"
+        assert cfg.enabled is True
+        assert str(config_yaml) in source
+
+    def test_partial_cascade_section_uses_defaults_for_missing_keys(self, tmp_path):
+        """A config.yaml with only some cascade keys falls back to defaults for the rest."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "cascade:\n"
+            "  relay_port: 9999\n",
+            encoding="utf-8",
+        )
+        cfg, source = cascade_actions.load_cascade_config(config_path=config_yaml)
+        assert cfg.relay_port == 9999
+        # Unspecified keys retain model defaults
+        assert cfg.relay_host == "127.0.0.1"
+        assert cfg.upstream_socks_port == 40000
+
+    def test_malformed_yaml_falls_back_to_defaults(self, tmp_path):
+        """Malformed config.yaml triggers fallback to defaults without raising."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text("cascade: [not, a, mapping", encoding="utf-8")
+        cfg, source = cascade_actions.load_cascade_config(config_path=config_yaml)
+        assert cfg.relay_port == 1080
+        assert "defaults" in source
+
+    def test_no_cascade_section_uses_defaults(self, tmp_path):
+        """A config.yaml without a cascade section yields defaults for cascade."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "warp:\n"
+            "  socks_port: 40000\n",
+            encoding="utf-8",
+        )
+        cfg, source = cascade_actions.load_cascade_config(config_path=config_yaml)
+        assert cfg.relay_port == 1080
+        assert cfg.enabled is False
+
+    def test_apply_config_preview_shows_config_source(self, tmp_path):
+        """apply_config preview must mention Источник конфигурации."""
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.apply_config(confirmed=False)
+        assert "Источник конфигурации" in result.body
+
+    def test_apply_config_preview_uses_yaml_values(self, tmp_path):
+        """When config.yaml exists, preview shows values from it (not hardcoded defaults)."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "cascade:\n"
+            "  relay_host: 192.168.99.1\n"
+            "  relay_port: 3333\n"
+            "  upstream_socks_host: 192.168.99.2\n"
+            "  upstream_socks_port: 4444\n"
+            "  mode: forward\n"
+            "  enabled: false\n",
+            encoding="utf-8",
+        )
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.cli.actions.cascade._find_config_yaml",
+                return_value=config_yaml,
+            ):
+                result = cascade_actions.apply_config(confirmed=False)
+        assert "192.168.99.1" in result.body
+        assert "3333" in result.body
+        assert "192.168.99.2" in result.body
+        assert "4444" in result.body
+
+    def test_apply_config_confirmed_uses_yaml_values(self, tmp_path):
+        """When confirmed, artifacts reflect values from config.yaml."""
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "cascade:\n"
+            "  relay_host: 10.10.10.10\n"
+            "  relay_port: 5555\n"
+            "  upstream_socks_host: 10.10.10.11\n"
+            "  upstream_socks_port: 6666\n"
+            "  mode: forward\n"
+            "  enabled: true\n",
+            encoding="utf-8",
+        )
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.cli.actions.cascade._find_config_yaml",
+                return_value=config_yaml,
+            ):
+                result = cascade_actions.apply_config(confirmed=True)
+        assert result.ok
+        cfg_text = (tmp_path / "cascade" / "3proxy.cfg").read_text()
+        assert "10.10.10.11 6666" in cfg_text  # upstream in parent line
+        assert "5555" in cfg_text               # relay port in socks line
+        # source shown in result body
+        assert "Источник конфигурации" in result.body

@@ -10,3 +10,11 @@ warp:
   backend: auto
   state_dir: /var/lib/daran-proxy-stack/warp
   log_dir: /var/log/daran-proxy-stack
+
+cascade:
+  relay_host: 127.0.0.1
+  relay_port: 1080
+  upstream_socks_host: 127.0.0.1
+  upstream_socks_port: 40000
+  mode: forward
+  enabled: false

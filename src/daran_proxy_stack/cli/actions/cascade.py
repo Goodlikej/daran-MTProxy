@@ -15,6 +15,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from daran_proxy_stack.lib.config import load_config
 from daran_proxy_stack.lib.models import CascadeConfig
 from daran_proxy_stack.lib.shell import run
 from daran_proxy_stack.modules import cascade as cascade_mod
@@ -28,8 +29,50 @@ class ActionResult:
     tip: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+def _find_config_yaml() -> Path | None:
+    """Locate config.yaml by walking up from the actions file.
+
+    Searches for ``config.yaml`` in project root (≤5 levels up).
+    Returns None if not found — callers fall back to defaults.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents[:5]:
+        candidate = parent / "config.yaml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_cascade_config(config_path: Path | None = None) -> tuple[CascadeConfig, str]:
+    """Load CascadeConfig from config.yaml with fallback to defaults.
+
+    Returns ``(config, source)`` where *source* is a human-readable label
+    describing where the config came from (for UI display).
+
+    Priority:
+      1. Explicit ``config_path`` argument (if provided)
+      2. Auto-discovered ``config.yaml`` in project root
+      3. Built-in defaults (safe fallback)
+    """
+    path = config_path or _find_config_yaml()
+    if path is not None and path.is_file():
+        try:
+            app_cfg = load_config(path)
+            return app_cfg.cascade, str(path)
+        except Exception:
+            # Malformed config — fall through to defaults
+            pass
+    return CascadeConfig(), "defaults (config.yaml not found)"
+
+
 def default_config() -> CascadeConfig:
-    return CascadeConfig()
+    """Backward-compatible helper — returns CascadeConfig from yaml or defaults."""
+    cfg, _ = load_cascade_config()
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +89,7 @@ def status() -> ActionResult:
     except Exception as exc:
         disc_data = {"error": str(exc)}
 
-    cfg = default_config()
+    cfg, _ = load_cascade_config()
     try:
         diag = cascade_mod.collect_diagnostics(cfg)
         sdict = cascade_mod.status_dict(cfg)
@@ -144,12 +187,14 @@ def list_rules() -> ActionResult:
 # Config apply (write to disk, no process management)
 # ---------------------------------------------------------------------------
 
-def apply_config(confirmed: bool = False) -> ActionResult:
+def apply_config(confirmed: bool = False, config_path: Path | None = None) -> ActionResult:
     """Generate cascade config artifacts (3proxy.cfg + cascade.service + state.json).
 
+    Loads CascadeConfig from config.yaml (auto-discovered or via ``config_path``),
+    with safe fallback to built-in defaults when config is absent or malformed.
     Does NOT start any service — only writes files to the artifacts directory.
     """
-    cfg = default_config()
+    cfg, cfg_source = load_cascade_config(config_path)
 
     # Locate artifacts dir
     artifacts_dir = _find_artifacts_dir()
@@ -179,6 +224,7 @@ def apply_config(confirmed: bool = False) -> ActionResult:
             "  • 3proxy.cfg    — конфиг 3proxy (SOCKS5 → upstream + managed rules)\n"
             "  • cascade.service — systemd unit\n"
             "  • state.json    — снимок конфигурации\n\n"
+            f"Источник конфигурации: {cfg_source}\n\n"
             f"Relay:         {cfg.relay_host}:{cfg.relay_port}\n"
             f"Upstream SOCKS: {cfg.upstream_socks_host}:{cfg.upstream_socks_port}\n\n"
             f"{rules_summary}\n\n"
@@ -196,7 +242,8 @@ def apply_config(confirmed: bool = False) -> ActionResult:
     return ActionResult(
         True,
         "Cascade: конфигурация сгенерирована",
-        summary + "\n\n"
+        f"Источник конфигурации: {cfg_source}\n\n"
+        + summary + "\n\n"
         "Для запуска службы:\n"
         "  sudo cp artifacts/cascade/cascade.service /etc/systemd/system/\n"
         "  sudo systemctl daemon-reload && sudo systemctl enable --now cascade",
