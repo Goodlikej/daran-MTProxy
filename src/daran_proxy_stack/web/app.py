@@ -14,7 +14,7 @@ templates = Jinja2Templates(directory=str(_HERE / "templates"))
 app = FastAPI(title="Daran Proxy Stack Panel", docs_url="/api/docs", redoc_url=None)
 app.include_router(_api.router, prefix="/api/v1")
 
-_VIEWS = ["overview", "servers", "mtproxy", "warp", "cascade", "jobs"]
+_VIEWS = ["overview", "servers", "mtproxy", "warp", "cascade", "jobs", "inventory"]
 
 
 @app.get("/", response_class=RedirectResponse, include_in_schema=False)

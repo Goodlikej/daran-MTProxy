@@ -1,0 +1,124 @@
+{% extends "base.html" %}
+{% block title %} · Inventory{% endblock %}
+
+{% block content %}
+<h1>Installed Stack</h1>
+<p class="subtitle">Detected components — presence, runtime status, versions, and endpoints</p>
+
+<div class="grid" id="inv-summary-cards">
+  <div class="card">
+    <h2>Detected</h2>
+    <div class="val" id="inv-detected">…</div>
+    <p>components found on host</p>
+  </div>
+  <div class="card">
+    <h2>Running</h2>
+    <div class="val ok" id="inv-running">…</div>
+    <p>actively running services</p>
+  </div>
+  <div class="card">
+    <h2>Total checked</h2>
+    <div class="val" id="inv-total">…</div>
+    <p id="inv-ts" style="color:var(--muted)">loading…</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Components</h2>
+  <table class="tbl">
+    <thead>
+      <tr>
+        <th>Component</th>
+        <th>Detected</th>
+        <th>Status</th>
+        <th>Version</th>
+        <th>Endpoint</th>
+        <th>Config</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody id="inv-tbody">
+      <tr><td colspan="7" style="color:var(--muted);text-align:center">loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Status legend</h2>
+  <p style="color:var(--muted);font-size:12px;line-height:2">
+    <span class="badge ok">running</span> actively running &nbsp;
+    <span class="badge warn">stopped</span> installed but not active &nbsp;
+    <span class="badge muted">not_installed</span> not found on host &nbsp;
+    <span class="badge err">unknown</span> detected but state indeterminate
+  </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function statusBadge(s) {
+  const map = {
+    running:       'ok',
+    stopped:       'warn',
+    not_installed: 'muted',
+    unknown:       'err',
+  };
+  return `<span class="badge ${map[s] || 'muted'}">${s || '—'}</span>`;
+}
+
+function detectedBadge(v) {
+  return v
+    ? '<span class="badge ok">yes</span>'
+    : '<span class="badge muted">no</span>';
+}
+
+async function loadInventory() {
+  try {
+    const r = await fetch('/api/v1/inventory');
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+
+    $('inv-detected').textContent = d.detected_count ?? '—';
+    $('inv-running').textContent  = d.running_count  ?? '—';
+    $('inv-total').textContent    = d.count          ?? '—';
+    $('inv-ts').textContent = 'fetched ' + new Date().toLocaleTimeString();
+
+    const services = d.services || [];
+    $('inv-tbody').innerHTML = services.map(s => {
+      const ep = s.endpoint
+        ? `<span class="badge info">${s.endpoint}</span>`
+        : '<span style="color:var(--muted)">—</span>';
+      const cfg = s.config_path
+        ? `<span style="color:var(--muted);font-size:11px;word-break:break-all">${s.config_path}</span>`
+        : '<span style="color:var(--muted)">—</span>';
+      const ver = s.version
+        ? `<span style="color:var(--accent);font-size:11px">${s.version}</span>`
+        : '<span style="color:var(--muted)">—</span>';
+      // surface interesting meta as notes
+      const metaKeys = ['warp_status', 'docker_status', 'container', 'interfaces', 'native_binary', 'error'];
+      const notes = metaKeys
+        .filter(k => s.meta && s.meta[k] != null)
+        .map(k => `${k}: ${Array.isArray(s.meta[k]) ? s.meta[k].join(',') : s.meta[k]}`)
+        .join(' · ');
+      return `<tr>
+        <td><strong>${s.label}</strong><br><span style="color:var(--muted);font-size:11px">${s.name}</span></td>
+        <td>${detectedBadge(s.detected)}</td>
+        <td>${statusBadge(s.runtime_status)}</td>
+        <td>${ver}</td>
+        <td>${ep}</td>
+        <td>${cfg}</td>
+        <td style="color:var(--muted);font-size:11px">${notes || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    $('inv-tbody').innerHTML = `<tr><td colspan="7" style="color:var(--red)">Error: ${e.message}</td></tr>`;
+  }
+}
+
+// inventory doesn't need the 5s status overlay — it has its own runtime_status
+window.onStatusUpdate = function(_) {};
+
+loadInventory();
+setInterval(loadInventory, 30000);
+</script>
+{% endblock %}

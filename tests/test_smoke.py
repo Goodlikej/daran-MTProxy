@@ -853,3 +853,397 @@ class TestMTProxyLogic:
         cfg = MTProxyConfig(ad_tag="promo99")
         cmd = mtproxy.render_official_run_command(cfg, secret=self._SECRET)
         assert "-P promo99" in cmd
+
+
+# ── Discovery / inventory ─────────────────────────────────────────────────────
+
+class TestDiscovery:
+    """Unit tests for discovery.py — all system calls mocked."""
+
+    from daran_proxy_stack.modules import discovery
+
+    def _ok(self, stdout: str = "") -> "CommandResult":
+        return CommandResult(command="...", returncode=0, stdout=stdout, stderr="")
+
+    def _fail(self, stderr: str = "not found") -> "CommandResult":
+        return CommandResult(command="...", returncode=1, stdout="", stderr=stderr)
+
+    # ── ServiceInventory dataclass ─────────────────────────────────────────
+
+    def test_service_inventory_to_dict_keys(self):
+        from daran_proxy_stack.modules.discovery import ServiceInventory
+        inv = ServiceInventory(
+            name="test", label="Test", detected=True,
+            version="1.0", runtime_status="running",
+        )
+        d = inv.to_dict()
+        assert set(d.keys()) == {"name", "label", "detected", "version",
+                                  "runtime_status", "config_path", "endpoint", "meta"}
+
+    def test_service_inventory_defaults(self):
+        from daran_proxy_stack.modules.discovery import ServiceInventory
+        inv = ServiceInventory(name="x", label="X", detected=False, version=None, runtime_status="unknown")
+        assert inv.config_path is None
+        assert inv.endpoint is None
+        assert inv.meta == {}
+
+    # ── _parse_docker_ports ────────────────────────────────────────────────
+
+    def test_parse_docker_ports_standard_mapping(self):
+        from daran_proxy_stack.modules.discovery import _parse_docker_ports
+        assert _parse_docker_ports("0.0.0.0:443->443/tcp") == "0.0.0.0:443"
+
+    def test_parse_docker_ports_multiple_mappings(self):
+        from daran_proxy_stack.modules.discovery import _parse_docker_ports
+        result = _parse_docker_ports("0.0.0.0:8080->80/tcp, 0.0.0.0:443->443/tcp")
+        assert result == "0.0.0.0:8080"
+
+    def test_parse_docker_ports_no_mapping_returns_none(self):
+        from daran_proxy_stack.modules.discovery import _parse_docker_ports
+        assert _parse_docker_ports("") is None
+        assert _parse_docker_ports("no_arrow_here") is None
+
+    # ── MTProxy detector ───────────────────────────────────────────────────
+
+    def test_detect_mtproxy_no_docker_no_native(self):
+        from daran_proxy_stack.modules import discovery
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", return_value=None):
+            result = discovery._detect_mtproxy()
+        assert result.detected is False
+        assert result.runtime_status == "not_installed"
+
+    def test_detect_mtproxy_docker_running_container(self):
+        from daran_proxy_stack.modules import discovery
+        ps_out = "mtproxy\tUp 2 hours\t0.0.0.0:443->443/tcp"
+        insp_out = "telegrammessenger/proxy:latest"
+
+        def _which(name):
+            return "/usr/bin/docker" if name == "docker" else None
+
+        def _run(cmd):
+            if "ps" in cmd:
+                return self._ok(ps_out)
+            if "inspect" in cmd:
+                return self._ok(insp_out)
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_mtproxy()
+
+        assert result.detected is True
+        assert result.runtime_status == "running"
+        assert result.version == insp_out
+        assert result.endpoint == "0.0.0.0:443"
+
+    def test_detect_mtproxy_docker_stopped_container(self):
+        from daran_proxy_stack.modules import discovery
+        ps_out = "mtproxy\tExited (0) 1 hour ago\t"
+        insp_out = "telegrammessenger/proxy:latest"
+
+        def _which(name):
+            return "/usr/bin/docker" if name == "docker" else None
+
+        def _run(cmd):
+            if "ps" in cmd:
+                return self._ok(ps_out)
+            if "inspect" in cmd:
+                return self._ok(insp_out)
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_mtproxy()
+
+        assert result.detected is True
+        assert result.runtime_status == "stopped"
+
+    def test_detect_mtproxy_docker_no_containers_no_image(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return "/usr/bin/docker" if name == "docker" else None
+
+        def _run(_cmd):
+            return self._ok("")  # empty output: no containers, no image
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_mtproxy()
+
+        assert result.runtime_status == "not_installed"
+
+    # ── WARP detector ──────────────────────────────────────────────────────
+
+    def test_detect_warp_not_installed(self):
+        from daran_proxy_stack.modules import discovery
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", return_value=None):
+            result = discovery._detect_warp()
+        assert result.detected is False
+        assert result.runtime_status == "not_installed"
+
+    def test_detect_warp_connected(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return f"/usr/bin/{name}" if name == "warp-cli" else None
+
+        def _run(cmd):
+            if "--version" in cmd:
+                return self._ok("warp-cli 2023.7.40.0")
+            if "status" in cmd:
+                return self._ok("Status update: Connected.")
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_warp()
+
+        assert result.detected is True
+        assert result.runtime_status == "running"
+        assert result.version == "warp-cli 2023.7.40.0"
+
+    def test_detect_warp_disconnected(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return "/usr/bin/warp-cli" if name == "warp-cli" else None
+
+        def _run(cmd):
+            if "--version" in cmd:
+                return self._ok("warp-cli 2023.7.40.0")
+            if "status" in cmd:
+                return self._ok("Status update: Disconnected.")
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_warp()
+
+        assert result.detected is True
+        assert result.runtime_status == "stopped"
+
+    def test_detect_warp_cloudflared_only(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return "/usr/local/bin/cloudflared" if name == "cloudflared" else None
+
+        def _run(cmd):
+            if "--version" in cmd:
+                return self._ok("cloudflared version 2024.1.0")
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_warp()
+
+        assert result.detected is True
+        assert result.runtime_status == "stopped"  # cloudflared alone = not connected
+        assert "cloudflared" in result.meta
+
+    # ── Xray detector ─────────────────────────────────────────────────────
+
+    def test_detect_xray_not_installed(self):
+        from daran_proxy_stack.modules import discovery
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", return_value=None), \
+             unittest.mock.patch("os.path.isfile", return_value=False):
+            result = discovery._detect_xray()
+        assert result.detected is False
+        assert result.runtime_status == "not_installed"
+
+    def test_detect_xray_installed_running(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return "/usr/local/bin/xray" if name == "xray" else None
+
+        def _run(cmd):
+            if "version" in cmd:
+                return self._ok("Xray 1.8.4 (Xray, Penetrates Everything.) Custom (go1.21.5 linux/amd64)")
+            if "pgrep" in cmd:
+                return self._ok("12345")
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_xray()
+
+        assert result.detected is True
+        assert result.runtime_status == "running"
+        assert "1.8.4" in (result.version or "")
+
+    def test_detect_xray_installed_stopped(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return "/usr/local/bin/xray" if name == "xray" else None
+
+        def _run(cmd):
+            if "version" in cmd:
+                return self._ok("Xray 1.8.4")
+            # pgrep returns nonzero when process not found
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_xray()
+
+        assert result.detected is True
+        assert result.runtime_status == "stopped"
+
+    # ── AmneziaWG detector ────────────────────────────────────────────────
+
+    def test_detect_amneziawg_not_installed(self):
+        from daran_proxy_stack.modules import discovery
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", return_value=None), \
+             unittest.mock.patch("os.path.isfile", return_value=False):
+            result = discovery._detect_amneziawg()
+        assert result.detected is False
+        assert result.runtime_status == "not_installed"
+
+    def test_detect_amneziawg_running_interface(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return "/usr/bin/awg" if name == "awg" else None
+
+        def _run(cmd):
+            if "--version" in cmd:
+                return self._ok("amneziawg v1.0.0")
+            if "interfaces" in cmd:
+                return self._ok("awg0")
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_amneziawg()
+
+        assert result.detected is True
+        assert result.runtime_status == "running"
+        assert result.meta.get("interfaces") == ["awg0"]
+
+    def test_detect_amneziawg_installed_no_interfaces(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _which(name):
+            return "/usr/bin/awg" if name == "awg" else None
+
+        def _run(cmd):
+            if "--version" in cmd:
+                return self._ok("amneziawg v1.0.0")
+            if "interfaces" in cmd:
+                return self._ok("")  # no active interfaces
+            return self._fail()
+
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.modules.discovery.run", side_effect=_run):
+            result = discovery._detect_amneziawg()
+
+        assert result.detected is True
+        assert result.runtime_status == "stopped"
+
+    # ── collect_inventory ──────────────────────────────────────────────────
+
+    def test_collect_inventory_returns_four_entries(self):
+        from daran_proxy_stack.modules import discovery
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", return_value=None), \
+             unittest.mock.patch("os.path.isfile", return_value=False):
+            entries = discovery.collect_inventory()
+        assert len(entries) == 4
+        names = {e.name for e in entries}
+        assert names == {"mtproxy", "warp", "xray", "amneziawg"}
+
+    def test_collect_inventory_tolerates_detector_exception(self):
+        from daran_proxy_stack.modules import discovery
+
+        def _boom():
+            raise RuntimeError("simulated failure")
+
+        original_detectors = [
+            discovery._detect_mtproxy,
+            discovery._detect_warp,
+            discovery._detect_xray,
+            discovery._detect_amneziawg,
+        ]
+        # Patch one detector to raise
+        with unittest.mock.patch.object(discovery, "_detect_mtproxy", side_effect=RuntimeError("boom")):
+            with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", return_value=None), \
+                 unittest.mock.patch("os.path.isfile", return_value=False):
+                entries = discovery.collect_inventory()
+        assert len(entries) == 4
+        mt = next((e for e in entries if e.name == "mtproxy"), None)
+        assert mt is not None
+        assert mt.runtime_status == "unknown"
+
+    def test_inventory_dict_structure(self):
+        from daran_proxy_stack.modules import discovery
+        with unittest.mock.patch("daran_proxy_stack.modules.discovery.shutil.which", return_value=None), \
+             unittest.mock.patch("os.path.isfile", return_value=False):
+            d = discovery.inventory_dict()
+        assert "services" in d
+        assert "timestamp" in d
+        assert "count" in d
+        assert "detected_count" in d
+        assert "running_count" in d
+        assert d["count"] == 4
+
+    def test_inventory_dict_counts_detected(self):
+        from daran_proxy_stack.modules.discovery import ServiceInventory, inventory_dict
+        entries = [
+            ServiceInventory("a", "A", detected=True, version=None, runtime_status="running"),
+            ServiceInventory("b", "B", detected=False, version=None, runtime_status="not_installed"),
+            ServiceInventory("c", "C", detected=True, version=None, runtime_status="stopped"),
+        ]
+        d = inventory_dict(entries)
+        assert d["detected_count"] == 2
+        assert d["running_count"] == 1
+
+
+# ── Discovery: API endpoint ───────────────────────────────────────────────────
+
+class TestInventoryEndpoint:
+    """HTTP-level smoke test for /api/v1/inventory. Skipped without httpx."""
+
+    def test_inventory_endpoint_returns_200(self, api_client):
+        resp = api_client.get("/api/v1/inventory")
+        assert resp.status_code == 200
+
+    def test_inventory_endpoint_has_services(self, api_client):
+        data = api_client.get("/api/v1/inventory").json()
+        assert "services" in data
+        assert isinstance(data["services"], list)
+
+    def test_inventory_endpoint_four_services(self, api_client):
+        data = api_client.get("/api/v1/inventory").json()
+        assert data["count"] == 4
+
+    def test_inventory_services_have_required_fields(self, api_client):
+        data = api_client.get("/api/v1/inventory").json()
+        for svc in data["services"]:
+            assert "name" in svc
+            assert "label" in svc
+            assert "detected" in svc
+            assert "runtime_status" in svc
+
+    def test_inventory_known_service_names(self, api_client):
+        data = api_client.get("/api/v1/inventory").json()
+        names = {s["name"] for s in data["services"]}
+        assert names == {"mtproxy", "warp", "xray", "amneziawg"}
+
+    def test_status_includes_inventory(self, api_client):
+        data = api_client.get("/api/v1/status").json()
+        assert "inventory" in data
+        assert "services" in data["inventory"]
+
+    def test_warp_info_has_socks_endpoint_field(self, api_client):
+        data = api_client.get("/api/v1/warp").json()
+        assert "socks_endpoint" in data
+
+    def test_warp_info_has_backend_source(self, api_client):
+        data = api_client.get("/api/v1/warp").json()
+        assert "backend_source" in data
+
+    def test_mtproxy_info_has_port_source(self, api_client):
+        data = api_client.get("/api/v1/mtproxy").json()
+        assert "port_source" in data

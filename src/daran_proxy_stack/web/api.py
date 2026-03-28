@@ -13,8 +13,10 @@ from daran_proxy_stack.lib.config import load_config
 from daran_proxy_stack.lib.executor import executor
 from daran_proxy_stack.lib.shell import run
 from daran_proxy_stack.modules import cascade as cascade_mod
+from daran_proxy_stack.modules import discovery as discovery_mod
 from daran_proxy_stack.modules import mtproxy as mt_mod
 from daran_proxy_stack.modules import warp as warp_mod
+from daran_proxy_stack import discovery as new_discovery
 
 router = APIRouter()
 
@@ -106,9 +108,28 @@ def _mtproxy_info() -> dict:
         secret = secret_file.read_text().strip() if secret_file.exists() else None
         tg_link_file = secret_file.parent / "tg-link.txt"
         tg_link = tg_link_file.read_text().strip() if tg_link_file.exists() else None
+
+        # Prefer observed port from running container over raw config default.
+        observed_port: int | None = None
+        container_running = d.container_status and d.container_status.lower().startswith("up")
+        if container_running and d.docker_path:
+            _port_result = run([d.docker_path, "ps",
+                "--filter", f"name={cfg.mtproxy.container_name}",
+                "--format", "{{.Ports}}"])
+            if _port_result.ok and _port_result.stdout.strip():
+                _ep = discovery_mod._parse_docker_ports(_port_result.stdout.strip().splitlines()[0])
+                if _ep and ":" in _ep:
+                    try:
+                        observed_port = int(_ep.rsplit(":", 1)[1])
+                    except ValueError:
+                        pass
+
+        effective_port = observed_port if observed_port is not None else cfg.mtproxy.listen_port
+
         return {
             "ok": True,
-            "port": cfg.mtproxy.listen_port,
+            "port": effective_port,
+            "port_source": "observed" if observed_port is not None else "config",
             "stats_port": cfg.mtproxy.stats_port,
             "docker": d.docker_path is not None,
             "docker_compose": d.docker_compose_path is not None,
@@ -133,6 +154,24 @@ def _warp_info() -> dict:
     cfg = _cfg()
     try:
         d = warp_mod.collect_diagnostics(cfg.warp)
+
+        # Observed backend: if backend=auto, trust detected tool presence over config label.
+        observed_backend = d.recommended_backend  # already resolved from detection
+
+        # SOCKS endpoint is only valid when the SOCKS proxy process is actually running.
+        socks_endpoint = (
+            f"{cfg.warp.socks_host}:{cfg.warp.socks_port}"
+            if d.socks_running
+            else None
+        )
+
+        # Version from warp-cli --version if available.
+        warp_version: str | None = None
+        if d.warp_cli_path:
+            _ver = run([d.warp_cli_path, "--version"])
+            if _ver.ok and _ver.stdout.strip():
+                warp_version = _ver.stdout.strip().splitlines()[0]
+
         return {
             "ok": True,
             "warp_cli": d.warp_cli_path is not None,
@@ -143,9 +182,12 @@ def _warp_info() -> dict:
             "warp_status": d.warp_status,
             "connected": d.connected,
             "socks_running": d.socks_running,
-            "backend": d.recommended_backend,
+            "backend": observed_backend,
+            "backend_source": "detected" if cfg.warp.backend == "auto" else "config",
             "socks_host": cfg.warp.socks_host,
             "socks_port": cfg.warp.socks_port,
+            "socks_endpoint": socks_endpoint,
+            "version": warp_version,
         }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -197,21 +239,31 @@ def _action_dispatch(module: str, action: str):
     return fn
 
 
+def _inventory_info() -> dict:
+    """Collect discovery/inventory for all known stack components."""
+    try:
+        return discovery_mod.inventory_dict()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "services": []}
+
+
 # ── routes ─────────────────────────────────────────────────────────────────────
 
 @router.get("/status")
 async def status() -> JSONResponse:
     loop = asyncio.get_event_loop()
-    mt, wp, srv = await asyncio.gather(
+    mt, wp, srv, inv = await asyncio.gather(
         loop.run_in_executor(None, _mtproxy_info),
         loop.run_in_executor(None, _warp_info),
         loop.run_in_executor(None, _server_info),
+        loop.run_in_executor(None, _inventory_info),
     )
     return JSONResponse({
         "panel_uptime_s": round(time.time() - _START_TIME),
         "server": srv,
         "mtproxy": mt,
         "warp": wp,
+        "inventory": inv,
         "tasks": [t.model_dump(mode="json") for t in executor.list_all()],
     })
 
@@ -235,6 +287,25 @@ async def warp() -> JSONResponse:
     loop = asyncio.get_event_loop()
     info = await loop.run_in_executor(None, _warp_info)
     return JSONResponse(info)
+
+
+@router.get("/inventory")
+async def inventory() -> JSONResponse:
+    """Return discovery inventory for all detected stack components."""
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, _inventory_info)
+    return JSONResponse(info)
+
+
+@router.get("/discovery")
+async def discovery_state() -> JSONResponse:
+    """Return full observed-state snapshot from the new discovery backend.
+
+    Uses daran_proxy_stack.discovery (schema v1.0) — richer than /inventory.
+    """
+    loop = asyncio.get_event_loop()
+    data = await loop.run_in_executor(None, new_discovery.discovery_dict)
+    return JSONResponse(data)
 
 
 @router.get("/jobs")
