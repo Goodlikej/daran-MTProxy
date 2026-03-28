@@ -1,4 +1,4 @@
-"""Tests for terminal menu MVP — render helpers and menu loop.
+"""Tests for terminal menu — render helpers and menu loop.
 
 All discovery calls are mocked so tests run fully offline.
 """
@@ -170,7 +170,8 @@ class TestRenderModulesTable:
         buf = StringIO()
         con = Console(file=buf, width=120, force_terminal=False, no_color=True)
         con.print(render_modules_table(state))
-        assert "no data" in buf.getvalue()
+        # Russian: "нет данных"
+        assert "нет данных" in buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +242,8 @@ class TestRenderModuleDetail:
         con.print(panel)
         out = buf.getvalue()
         assert "1.2.3.4" in out
-        assert "present" in out
+        # Russian: "есть" for secret_present
+        assert "есть" in out
         assert "tg://proxy" in out
 
     def test_none_module_handled(self):
@@ -251,7 +253,7 @@ class TestRenderModuleDetail:
         buf = StringIO()
         con = Console(file=buf, width=80, force_terminal=False, no_color=True)
         con.print(panel)
-        assert "No data" in buf.getvalue()
+        assert "No data" in buf.getvalue()  # English fallback message
 
     def test_warp_detail(self):
         now = "2026-03-28T10:00:00+00:00"
@@ -289,7 +291,8 @@ class TestCmdViewModules:
             cmd_view_modules(None)
             mock_con.print.assert_called_once()
             args, _ = mock_con.print.call_args
-            assert "No discovery" in str(args[0])
+            # Russian warning text
+            assert "Нет данных" in str(args[0])
 
     def test_with_state_no_crash(self):
         state = _make_state()
@@ -304,30 +307,24 @@ class TestCmdViewModules:
 
 class TestRunMenu:
     def test_exit_on_zero(self):
-        """Choosing 0 should exit cleanly."""
+        """Выбор 0 должен завершить меню без ошибок."""
         inputs = deque(["0"])
         with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
             run_menu(input_fn=lambda: inputs.popleft())
 
     def test_unknown_choice_then_exit(self):
+        """Неизвестный выбор — вывод ошибки, затем выход."""
         inputs = deque(["9", "0"])
         with unittest.mock.patch("daran_proxy_stack.cli.menu.console") as mock_con:
             run_menu(input_fn=lambda: inputs.popleft())
-            # Should have printed an "Unknown choice" message
             all_calls = [str(c) for c in mock_con.print.call_args_list]
-            assert any("Unknown" in c for c in all_calls)
+            # Russian: "Неизвестный выбор"
+            assert any("Неизвестный" in c for c in all_calls)
 
-    def test_view_modules_without_rediscover_warns(self):
-        inputs = deque(["2", "0"])
-        with unittest.mock.patch("daran_proxy_stack.cli.menu.console") as mock_con:
-            run_menu(input_fn=lambda: inputs.popleft())
-            all_calls = [str(c) for c in mock_con.print.call_args_list]
-            assert any("No discovery" in c for c in all_calls)
-
-    def test_rediscover_runs_discovery(self):
-        """Choosing 1 should call run_discovery()."""
+    def test_rediscover_via_r_key(self):
+        """Клавиша 'r' должна вызвать run_discovery()."""
         state = _make_state()
-        inputs = deque(["1", "0"])
+        inputs = deque(["r", "0"])
         with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
             with unittest.mock.patch(
                 "daran_proxy_stack.cli.menu.run_discovery",
@@ -336,25 +333,47 @@ class TestRunMenu:
                 run_menu(input_fn=lambda: inputs.popleft())
                 mock_disc.assert_called_once()
 
-    def test_view_modules_after_rediscover(self):
-        """Choosing 2 after 1 should show module details."""
+    def test_mtproxy_submenu_opens_and_back(self):
+        """Клавиша '1' открывает MTProxy-подменю, '0' возвращает назад."""
         state = _make_state()
-        inputs = deque(["1", "2", "0"])
+        # 1 → enter MTProxy submenu → 0 → back → 0 → exit main menu
+        inputs = deque(["1", "0", "0"])
         with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
-            with unittest.mock.patch(
-                "daran_proxy_stack.cli.menu.run_discovery",
-                return_value=state,
-            ):
-                with unittest.mock.patch(
-                    "daran_proxy_stack.cli.menu.cmd_view_modules"
-                ) as mock_view:
-                    run_menu(input_fn=lambda: inputs.popleft())
-                    mock_view.assert_called_once_with(state)
+            run_menu(input_fn=lambda: inputs.popleft())
+
+    def test_cascade_submenu_opens_and_back(self):
+        """Клавиша '2' открывает Cascade-подменю."""
+        state = _make_state()
+        inputs = deque(["2", "0", "0"])
+        with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
+            run_menu(input_fn=lambda: inputs.popleft())
+
+    def test_warp_submenu_opens_and_back(self):
+        """Клавиша '3' открывает WARP-подменю."""
+        state = _make_state()
+        inputs = deque(["3", "0", "0"])
+        with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
+            run_menu(input_fn=lambda: inputs.popleft())
+
+    def test_3xui_submenu_opens_and_back(self):
+        """Клавиша '4' открывает 3x-ui-подменю."""
+        inputs = deque(["4", "0", "0"])
+        with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
+            run_menu(input_fn=lambda: inputs.popleft())
+
+    def test_mtproxy_submenu_status_no_state(self):
+        """В подменю MTProxy → '1' при отсутствии данных выводит предупреждение."""
+        # No state (input_fn provided, so no auto-discovery)
+        inputs = deque(["1", "1", "0", "0"])
+        with unittest.mock.patch("daran_proxy_stack.cli.menu.console") as mock_con:
+            run_menu(input_fn=lambda: inputs.popleft())
+            all_calls = [str(c) for c in mock_con.print.call_args_list]
+            assert any("Нет данных" in c for c in all_calls)
 
     def test_eof_exits_cleanly(self):
-        """EOFError from input should exit without raising."""
+        """EOFError из input должен завершить меню без исключений."""
         def raise_eof():
             raise EOFError
 
         with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
-            run_menu(input_fn=raise_eof)  # should not raise
+            run_menu(input_fn=raise_eof)  # не должен бросать исключение
