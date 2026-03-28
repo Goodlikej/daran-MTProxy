@@ -55,6 +55,19 @@
     <tbody id="ov-jobs"></tbody>
   </table>
 </div>
+
+<div class="section">
+  <h2>Installed Stack
+    <span class="badge muted" id="ov-inv-count" style="font-size:11px"></span>
+    <a href="/inventory" style="margin-left:auto;font-size:11px">full view →</a>
+  </h2>
+  <table class="tbl" id="ov-inv-tbl">
+    <thead><tr><th>Component</th><th>Installed</th><th>Running</th><th>Version</th></tr></thead>
+    <tbody id="ov-inv-tbody">
+      <tr><td colspan="4" style="color:var(--muted)">loading…</td></tr>
+    </tbody>
+  </table>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -120,6 +133,31 @@ window.onStatusUpdate = function(d) {
   tbody.innerHTML = (d.jobs || []).map(j =>
     `<tr><td>${j.name}</td><td><span class="badge ${statusCls[j.status]||'muted'}">${j.status}</span></td><td style="color:var(--muted)">${j.description}</td></tr>`
   ).join('');
+
 };
+
+// ── overview inventory ────────────────────────────────────────────────────────
+function _statusBadge(s) {
+  const map = {running:'ok', stopped:'warn', not_installed:'muted', unknown:'err'};
+  return `<span class="badge ${map[s]||'muted'}">${s||'—'}</span>`;
+}
+
+async function loadOvInventory() {
+  try {
+    const r = await fetch('/api/v1/inventory');
+    if (!r.ok) return;
+    const d = await r.json();
+    const services = d.services || [];
+    $('ov-inv-count').textContent = (d.detected_count ?? 0) + ' / ' + (d.count ?? 0) + ' detected';
+    $('ov-inv-tbody').innerHTML = services.map(s => `<tr>
+      <td>${s.label}</td>
+      <td>${s.detected ? '<span class="badge ok">yes</span>' : '<span class="badge muted">no</span>'}</td>
+      <td>${_statusBadge(s.runtime_status)}</td>
+      <td style="color:var(--accent);font-size:11px">${s.version || '—'}</td>
+    </tr>`).join('');
+  } catch(_) {}
+}
+loadOvInventory();
+setInterval(loadOvInventory, 30000);
 </script>
 {% endblock %}
