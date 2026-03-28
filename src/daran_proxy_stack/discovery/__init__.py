@@ -21,6 +21,10 @@ from daran_proxy_stack.discovery.modules.warp import detect_warp, WarpState
 from daran_proxy_stack.discovery.modules.mtproxy import detect_mtproxy, MTProxyState
 from daran_proxy_stack.discovery.modules.cascade import detect_cascade, CascadeState
 from daran_proxy_stack.discovery.runner import run_discovery, discovery_dict
+from daran_proxy_stack.discovery.compat import (
+    observed_state_to_inventory_dict,
+    inventory_dict_from_discovery,
+)
 
 __all__ = [
     # schema
@@ -42,4 +46,7 @@ __all__ = [
     "detect_cascade",
     "run_discovery",
     "discovery_dict",
+    # compat adapter
+    "observed_state_to_inventory_dict",
+    "inventory_dict_from_discovery",
 ]

@@ -240,11 +240,23 @@ def _action_dispatch(module: str, action: str):
 
 
 def _inventory_info() -> dict:
-    """Collect discovery/inventory for all known stack components."""
+    """Collect discovery/inventory for all known stack components.
+
+    Sources data from the new discovery backend via the compat adapter.
+    Falls back to the legacy modules/discovery path if the new backend fails.
+    """
     try:
-        return discovery_mod.inventory_dict()
-    except Exception as exc:
-        return {"ok": False, "error": str(exc), "services": []}
+        from daran_proxy_stack.discovery.compat import inventory_dict_from_discovery
+        return inventory_dict_from_discovery()
+    except Exception as exc_new:
+        # Graceful fallback: legacy path keeps the endpoint alive if new backend breaks
+        try:
+            result = discovery_mod.inventory_dict()
+            result.setdefault("meta", {})["_backend"] = "legacy/fallback"
+            result["meta"]["_fallback_reason"] = str(exc_new)
+            return result
+        except Exception as exc_old:
+            return {"ok": False, "error": str(exc_old), "services": []}
 
 
 # ── routes ─────────────────────────────────────────────────────────────────────

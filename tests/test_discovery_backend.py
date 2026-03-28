@@ -685,3 +685,165 @@ class TestRunner:
 
         assert state.discovery.status == "ok"
         assert state.discovery.partial_modules == []
+
+
+# ===========================================================================
+# Compat adapter tests
+# ===========================================================================
+
+class TestCompatAdapter:
+    """Tests for discovery/compat.py — ObservedState → legacy inventory schema."""
+
+    def _make_observed_state(self):
+        """Build a minimal ObservedState with all modules not_installed."""
+        import unittest.mock
+        from datetime import datetime, timezone
+        from daran_proxy_stack.discovery.schema import (
+            HostState, DiscoveryMeta, ObservedState, ModuleHealth, ModuleManager
+        )
+        from daran_proxy_stack.discovery.modules.warp import WarpState
+        from daran_proxy_stack.discovery.modules.mtproxy import MTProxyState
+        from daran_proxy_stack.discovery.modules.cascade import CascadeState
+
+        now = datetime.now(timezone.utc).isoformat()
+        fake_warp = WarpState(installed=False, enabled=False, running=False,
+                              health=ModuleHealth.not_installed, version=None,
+                              manager=ModuleManager.none, last_checked_at=now)
+        fake_mtp = MTProxyState(installed=False, enabled=False, running=False,
+                                health=ModuleHealth.not_installed, version=None,
+                                manager=ModuleManager.none, last_checked_at=now)
+        fake_cas = CascadeState(installed=False, enabled=False, running=False,
+                                health=ModuleHealth.not_installed, version=None,
+                                manager=ModuleManager.none, last_checked_at=now)
+        host = HostState(os="ubuntu", version="24.04", public_ip="1.2.3.4", hostname="node-1")
+        meta = DiscoveryMeta(last_run_at=now, status="ok")
+        return ObservedState(schema_version="1.0", host=host, discovery=meta,
+                             warp=fake_warp, mtproxy=fake_mtp, cascade=fake_cas)
+
+    def test_inventory_dict_top_level_keys(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        state = self._make_observed_state()
+        d = observed_state_to_inventory_dict(state)
+        for key in ("services", "timestamp", "count", "detected_count", "running_count"):
+            assert key in d, f"missing key: {key}"
+
+    def test_inventory_dict_service_count(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        state = self._make_observed_state()
+        d = observed_state_to_inventory_dict(state)
+        assert d["count"] == 3
+        assert len(d["services"]) == 3
+
+    def test_inventory_dict_service_names(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        state = self._make_observed_state()
+        d = observed_state_to_inventory_dict(state)
+        names = {s["name"] for s in d["services"]}
+        assert names == {"warp", "mtproxy", "cascade"}
+
+    def test_inventory_dict_service_fields(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        state = self._make_observed_state()
+        d = observed_state_to_inventory_dict(state)
+        required = {"name", "label", "detected", "version", "runtime_status",
+                    "config_path", "endpoint", "meta"}
+        for svc in d["services"]:
+            assert required.issubset(svc.keys()), f"missing fields in {svc['name']}"
+
+    def test_not_installed_maps_to_correct_status(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        state = self._make_observed_state()
+        d = observed_state_to_inventory_dict(state)
+        for svc in d["services"]:
+            assert svc["runtime_status"] == "not_installed"
+            assert svc["detected"] is False
+
+    def test_healthy_module_maps_to_running(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        from daran_proxy_stack.discovery.schema import ModuleHealth, ModuleManager
+        from daran_proxy_stack.discovery.modules.warp import WarpState
+        from datetime import datetime, timezone
+
+        state = self._make_observed_state()
+        now = datetime.now(timezone.utc).isoformat()
+        state.warp = WarpState(installed=True, enabled=True, running=True,
+                               health=ModuleHealth.healthy, version="2024.1.0",
+                               manager=ModuleManager.systemd, last_checked_at=now)
+        d = observed_state_to_inventory_dict(state)
+        warp_svc = next(s for s in d["services"] if s["name"] == "warp")
+        assert warp_svc["runtime_status"] == "running"
+        assert warp_svc["detected"] is True
+        assert warp_svc["version"] == "2024.1.0"
+
+    def test_degraded_module_maps_to_running(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        from daran_proxy_stack.discovery.schema import ModuleHealth, ModuleManager
+        from daran_proxy_stack.discovery.modules.warp import WarpState
+        from datetime import datetime, timezone
+
+        state = self._make_observed_state()
+        now = datetime.now(timezone.utc).isoformat()
+        state.warp = WarpState(installed=True, enabled=True, running=True,
+                               health=ModuleHealth.degraded, version=None,
+                               manager=ModuleManager.systemd, last_checked_at=now)
+        d = observed_state_to_inventory_dict(state)
+        warp_svc = next(s for s in d["services"] if s["name"] == "warp")
+        assert warp_svc["runtime_status"] == "running"
+
+    def test_broken_module_maps_to_unknown(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        from daran_proxy_stack.discovery.schema import ModuleHealth, ModuleManager
+        from daran_proxy_stack.discovery.modules.warp import WarpState
+        from datetime import datetime, timezone
+
+        state = self._make_observed_state()
+        now = datetime.now(timezone.utc).isoformat()
+        state.warp = WarpState(installed=True, enabled=False, running=False,
+                               health=ModuleHealth.broken, version=None,
+                               manager=ModuleManager.systemd, last_checked_at=now)
+        d = observed_state_to_inventory_dict(state)
+        warp_svc = next(s for s in d["services"] if s["name"] == "warp")
+        assert warp_svc["runtime_status"] == "unknown"
+
+    def test_none_module_slot_handled_gracefully(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        state = self._make_observed_state()
+        state.warp = None
+        d = observed_state_to_inventory_dict(state)
+        warp_svc = next(s for s in d["services"] if s["name"] == "warp")
+        assert warp_svc["runtime_status"] == "unknown"
+        assert warp_svc["detected"] is False
+
+    def test_backend_marker_present(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        state = self._make_observed_state()
+        d = observed_state_to_inventory_dict(state)
+        assert d.get("_backend") == "discovery/v1"
+
+    def test_detected_and_running_counts(self):
+        from daran_proxy_stack.discovery.compat import observed_state_to_inventory_dict
+        from daran_proxy_stack.discovery.schema import ModuleHealth, ModuleManager
+        from daran_proxy_stack.discovery.modules.warp import WarpState
+        from datetime import datetime, timezone
+
+        state = self._make_observed_state()
+        now = datetime.now(timezone.utc).isoformat()
+        state.warp = WarpState(installed=True, enabled=True, running=True,
+                               health=ModuleHealth.healthy, version=None,
+                               manager=ModuleManager.systemd, last_checked_at=now)
+        d = observed_state_to_inventory_dict(state)
+        assert d["detected_count"] == 1
+        assert d["running_count"] == 1
+
+    def test_inventory_dict_from_discovery_uses_new_backend(self):
+        """inventory_dict_from_discovery() should call run_discovery(), not legacy path."""
+        import unittest.mock
+        from daran_proxy_stack.discovery.compat import inventory_dict_from_discovery
+        state = self._make_observed_state()
+        with unittest.mock.patch(
+            "daran_proxy_stack.discovery.runner.run_discovery", return_value=state
+        ) as mock_run:
+            d = inventory_dict_from_discovery()
+        mock_run.assert_called_once()
+        assert d.get("_backend") == "discovery/v1"
+        assert "services" in d
