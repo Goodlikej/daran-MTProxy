@@ -485,6 +485,22 @@ def mtproxy_plan() -> None:
     ))
 
 
+@app.command("menu")
+def menu_cmd() -> None:
+    """Interactive terminal menu: discover system, view module statuses."""
+    from daran_proxy_stack.cli.menu import run_menu
+    run_menu()
+
+
+@app.command("discover")
+def discover_cmd() -> None:
+    """Run discovery and print observed system state (non-interactive)."""
+    from daran_proxy_stack.cli.menu import render_full_discovery
+    from daran_proxy_stack.discovery.runner import run_discovery
+    state = run_discovery()
+    render_full_discovery(state)
+
+
 @app.command("panel")
 def panel(
     host: str = typer.Option("127.0.0.1", help="Bind host"),
