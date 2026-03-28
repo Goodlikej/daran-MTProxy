@@ -921,3 +921,189 @@ class TestMenuCascadeRuleManagementFlow:
         self._run(["2", "9", "y", "0", "0"], tmp_path)
         from daran_proxy_stack.modules.cascade import load_rules
         assert load_rules(tmp_path) == []
+
+
+# ---------------------------------------------------------------------------
+# Integration: managed rules → render_3proxy_config / apply
+# ---------------------------------------------------------------------------
+
+class TestCascadeManagedRulesIntegration:
+    """Verify that managed rules.json content feeds into generated 3proxy.cfg."""
+
+    # --- render_rules_section ---
+
+    def test_render_rules_section_empty(self):
+        from daran_proxy_stack.modules.cascade import render_rules_section
+        assert render_rules_section([]) == ""
+
+    def test_render_rules_section_tcp(self):
+        from daran_proxy_stack.modules.cascade import render_rules_section
+        rules = [{"protocol": "tcp", "listen_port": 1234, "target_host": "10.0.0.1", "target_port": 5678, "notes": ""}]
+        out = render_rules_section(rules)
+        assert "tcppm" in out
+        assert "-p1234" in out
+        assert "-e10.0.0.1" in out
+        assert "-E5678" in out
+        assert "udppm" not in out
+
+    def test_render_rules_section_udp(self):
+        from daran_proxy_stack.modules.cascade import render_rules_section
+        rules = [{"protocol": "udp", "listen_port": 5000, "target_host": "a.b.c", "target_port": 9000, "notes": ""}]
+        out = render_rules_section(rules)
+        assert "udppm" in out
+        assert "tcppm" not in out
+
+    def test_render_rules_section_both(self):
+        from daran_proxy_stack.modules.cascade import render_rules_section
+        rules = [{"protocol": "both", "listen_port": 7000, "target_host": "x.y", "target_port": 7001, "notes": ""}]
+        out = render_rules_section(rules)
+        assert "tcppm" in out
+        assert "udppm" in out
+
+    def test_render_rules_section_notes_as_comment(self):
+        from daran_proxy_stack.modules.cascade import render_rules_section
+        rules = [{"protocol": "tcp", "listen_port": 80, "target_host": "h", "target_port": 8080, "notes": "my relay"}]
+        out = render_rules_section(rules)
+        assert "my relay" in out
+
+    def test_render_rules_section_multiple(self):
+        from daran_proxy_stack.modules.cascade import render_rules_section
+        rules = [
+            {"protocol": "tcp", "listen_port": 1000, "target_host": "a", "target_port": 2000, "notes": ""},
+            {"protocol": "udp", "listen_port": 1001, "target_host": "b", "target_port": 2001, "notes": ""},
+        ]
+        out = render_rules_section(rules)
+        assert "-p1000" in out
+        assert "-p1001" in out
+        assert "tcppm" in out
+        assert "udppm" in out
+
+    # --- render_3proxy_config with rules ---
+
+    def test_render_3proxy_config_no_rules(self):
+        from daran_proxy_stack.modules.cascade import render_3proxy_config
+        from daran_proxy_stack.lib.models import CascadeConfig
+        cfg = CascadeConfig()
+        out = render_3proxy_config(cfg, rules=None)
+        assert "socks" in out
+        assert "parent" in out
+        assert "tcppm" not in out
+
+    def test_render_3proxy_config_empty_rules(self):
+        from daran_proxy_stack.modules.cascade import render_3proxy_config
+        from daran_proxy_stack.lib.models import CascadeConfig
+        cfg = CascadeConfig()
+        out = render_3proxy_config(cfg, rules=[])
+        assert "tcppm" not in out
+
+    def test_render_3proxy_config_with_rules_includes_portmap(self):
+        from daran_proxy_stack.modules.cascade import render_3proxy_config
+        from daran_proxy_stack.lib.models import CascadeConfig
+        cfg = CascadeConfig()
+        rules = [{"protocol": "tcp", "listen_port": 4443, "target_host": "10.0.0.5", "target_port": 443, "notes": ""}]
+        out = render_3proxy_config(cfg, rules=rules)
+        assert "socks" in out
+        assert "parent" in out
+        assert "tcppm" in out
+        assert "-p4443" in out
+        assert "-e10.0.0.5" in out
+        assert "-E443" in out
+
+    # --- apply() loads rules from disk and embeds them ---
+
+    def test_apply_no_rules_no_portmap_in_cfg(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import apply
+        from daran_proxy_stack.lib.models import CascadeConfig
+        cfg = CascadeConfig()
+        apply(cfg, tmp_path)
+        cfg_text = (tmp_path / "cascade" / "3proxy.cfg").read_text()
+        assert "tcppm" not in cfg_text
+        assert "udppm" not in cfg_text
+
+    def test_apply_with_rules_embeds_portmap(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import apply, add_rule
+        from daran_proxy_stack.lib.models import CascadeConfig
+        cfg = CascadeConfig()
+        add_rule(tmp_path, protocol="tcp", listen_port=8080, target_host="192.168.1.1", target_port=80)
+        apply(cfg, tmp_path)
+        cfg_text = (tmp_path / "cascade" / "3proxy.cfg").read_text()
+        assert "tcppm" in cfg_text
+        assert "-p8080" in cfg_text
+        assert "-e192.168.1.1" in cfg_text
+        assert "-E80" in cfg_text
+
+    def test_apply_with_rules_state_json_includes_count(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import apply, add_rule
+        from daran_proxy_stack.lib.models import CascadeConfig
+        import json as _json
+        cfg = CascadeConfig()
+        add_rule(tmp_path, protocol="tcp", listen_port=1111, target_host="h", target_port=2222)
+        add_rule(tmp_path, protocol="udp", listen_port=3333, target_host="h", target_port=4444)
+        apply(cfg, tmp_path)
+        state = _json.loads((tmp_path / "cascade" / "state.json").read_text())
+        assert state["rules_count"] == 2
+
+    def test_apply_summary_mentions_rules(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import apply, add_rule
+        from daran_proxy_stack.lib.models import CascadeConfig
+        cfg = CascadeConfig()
+        add_rule(tmp_path, protocol="tcp", listen_port=9999, target_host="x", target_port=1)
+        summary = apply(cfg, tmp_path)
+        assert "1 managed rule" in summary
+
+    def test_apply_summary_zero_rules(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import apply
+        from daran_proxy_stack.lib.models import CascadeConfig
+        cfg = CascadeConfig()
+        summary = apply(cfg, tmp_path)
+        assert "0 managed rule" in summary
+
+    # --- apply_config action preview reflects managed rules ---
+
+    def test_apply_config_preview_shows_managed_rules(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule
+        add_rule(tmp_path, protocol="tcp", listen_port=7777, target_host="relay.example.com", target_port=443)
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.apply_config(confirmed=False)
+        assert not result.ok  # preview, not confirmed
+        assert "7777" in result.body
+        assert "relay.example.com" in result.body
+        assert "tcppm" in result.body  # rules appear in preview cfg text
+
+    def test_apply_config_preview_shows_zero_rules_message(self, tmp_path):
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.apply_config(confirmed=False)
+        assert "0" in result.body
+        assert "Добавьте" in result.body or "добавьте" in result.body
+
+    def test_apply_config_confirmed_with_rules_writes_portmap(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule
+        add_rule(tmp_path, protocol="tcp", listen_port=6543, target_host="exit.node", target_port=1080)
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.apply_config(confirmed=True)
+        assert result.ok
+        cfg_text = (tmp_path / "cascade" / "3proxy.cfg").read_text()
+        assert "tcppm" in cfg_text
+        assert "-p6543" in cfg_text
+        assert "-eexit.node" in cfg_text
+
+    def test_apply_config_confirmed_rules_count_in_summary(self, tmp_path):
+        from daran_proxy_stack.modules.cascade import add_rule
+        add_rule(tmp_path, protocol="both", listen_port=5432, target_host="db.internal", target_port=5432)
+        add_rule(tmp_path, protocol="tcp", listen_port=8888, target_host="api.internal", target_port=80)
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = cascade_actions.apply_config(confirmed=True)
+        assert result.ok
+        assert "2" in result.body

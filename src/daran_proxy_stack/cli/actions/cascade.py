@@ -155,18 +155,33 @@ def apply_config(confirmed: bool = False) -> ActionResult:
     artifacts_dir = _find_artifacts_dir()
 
     if not confirmed:
-        proxy_cfg = cascade_mod.render_3proxy_config(cfg)
-        service = cascade_mod.render_systemd_unit(cfg)
+        rules = cascade_mod.load_rules(artifacts_dir)
+        proxy_cfg = cascade_mod.render_3proxy_config(cfg, rules=rules)
         out_dir = artifacts_dir / "cascade"
+
+        rules_summary: str
+        if rules:
+            rules_lines = []
+            for r in rules:
+                rules_lines.append(
+                    f"    [{r['id']}] "
+                    f"{r['protocol'].upper()} :{r['listen_port']} → "
+                    f"{r['target_host']}:{r['target_port']}"
+                )
+            rules_summary = f"Управляемых правил: {len(rules)}\n" + "\n".join(rules_lines)
+        else:
+            rules_summary = "Управляемых правил: 0 (добавьте через «Добавить правило»)"
+
         return ActionResult(
             False,
             "Cascade: генерация конфигурации",
             f"Будет создано в {out_dir}:\n\n"
-            "  • 3proxy.cfg    — конфиг 3proxy (SOCKS5 → upstream)\n"
+            "  • 3proxy.cfg    — конфиг 3proxy (SOCKS5 → upstream + managed rules)\n"
             "  • cascade.service — systemd unit\n"
             "  • state.json    — снимок конфигурации\n\n"
             f"Relay:         {cfg.relay_host}:{cfg.relay_port}\n"
             f"Upstream SOCKS: {cfg.upstream_socks_host}:{cfg.upstream_socks_port}\n\n"
+            f"{rules_summary}\n\n"
             "Предпросмотр 3proxy.cfg:\n"
             "─────────────────────────\n"
             f"{proxy_cfg}",
