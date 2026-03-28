@@ -41,6 +41,8 @@ from daran_proxy_stack.discovery.schema import (
 )
 from daran_proxy_stack.cli.actions import warp as warp_actions
 from daran_proxy_stack.cli.actions import mtproxy as mtproxy_actions
+from daran_proxy_stack.cli.actions import cascade as cascade_actions
+from daran_proxy_stack.cli.actions import xui as xui_actions
 
 console = Console()
 
@@ -420,13 +422,14 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
 
 
 def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
-    """Подменю Cascade."""
+    """Подменю Cascade с реальными действиями."""
     items = [
-        ("1", "Статус"),
-        ("2", "Установить"),
-        ("3", "Удалить"),
-        ("4", "Показать конфигурацию"),
-        ("5", "Обновить данные"),
+        ("1", "Статус (discovery + TCP-пробы)"),
+        ("2", "Список правил (iptables / persisted)"),
+        ("3", "Показать конфигурацию (сгенерированные файлы)"),
+        ("4", "Применить конфиг  (записать 3proxy.cfg + .service + state.json)"),
+        ("5", "Установить 3proxy  (инструкция)"),
+        ("u", "Обновить данные"),
         ("0", "← Назад"),
     ]
     while True:
@@ -438,15 +441,35 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
             break
 
         if choice == "1":
-            _submenu_status("cascade", state)
+            result = cascade_actions.status()
+            _show_action_result(result)
+
         elif choice == "2":
-            _wip_action("Установить Cascade")
+            result = cascade_actions.list_rules()
+            _show_action_result(result)
+
         elif choice == "3":
-            _wip_action("Удалить Cascade")
+            result = cascade_actions.show_config()
+            _show_action_result(result)
+
         elif choice == "4":
-            _wip_action("Показать конфигурацию Cascade")
+            preview = cascade_actions.apply_config(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = cascade_actions.apply_config(confirmed=True)
+                _show_action_result(result)
+                if result.ok:
+                    state = cmd_rediscover()
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "5":
+            result = cascade_actions.install_3proxy_guide()
+            _show_action_result(result)
+
+        elif choice in ("u", "U"):
             state = cmd_rediscover()
+
         elif choice == "0":
             break
         else:
@@ -560,18 +583,18 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
 
 
 def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
-    """Подменю 3x-ui (каркас — установка через отдельный скрипт)."""
+    """Подменю 3x-ui с реальным обнаружением и installer path skeleton."""
     items = [
-        ("1", "Статус"),
-        ("2", "Установить  [установка через отдельный скрипт]"),
-        ("3", "Удалить     [не реализовано]"),
+        ("1", "Статус  (обнаружение: systemd + process + web-probe)"),
+        ("2", "Установить  (официальный скрипт mhsanaei/3x-ui)"),
+        ("3", "Перезапустить  (systemctl restart x-ui)"),
         ("0", "← Назад"),
     ]
     while True:
         _print_submenu(
             "3x-ui",
             items,
-            status_line=Text("○ обнаружение через отдельный скрипт", style="dim"),
+            status_line=Text("○ внешний модуль — не в discovery", style="dim"),
         )
         try:
             choice = input_fn()
@@ -579,28 +602,22 @@ def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
             break
 
         if choice == "1":
-            console.print(Panel(
-                "[yellow]⚠ Обнаружение 3x-ui пока не интегрировано в discovery.[/yellow]\n\n"
-                "Проверить вручную:\n"
-                "  systemctl status x-ui 2>/dev/null\n"
-                "  ps aux | grep x-ui\n"
-                "  curl -s http://localhost:2053/ 2>/dev/null | head -5",
-                title="Статус 3x-ui",
-                border_style="yellow",
-                expand=False,
-            ))
+            result = xui_actions.status()
+            _show_action_result(result)
+
         elif choice == "2":
-            console.print(Panel(
-                "[cyan]Установка 3x-ui (официальный скрипт):[/cyan]\n\n"
-                "  bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)\n\n"
-                "[yellow]⚠ Установка выполняется вручную через официальный скрипт.[/yellow]\n"
-                "[dim]После установки раздел будет обновлён автоматически при следующем discovery.[/dim]",
-                title="Установка 3x-ui",
-                border_style="cyan",
-                expand=False,
-            ))
+            preview = xui_actions.install_guide(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = xui_actions.install_guide(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
         elif choice == "3":
-            _wip_action("Удалить 3x-ui")
+            result = xui_actions.service_restart()
+            _show_action_result(result)
+
         elif choice == "0":
             break
         else:
