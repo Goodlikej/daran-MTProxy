@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from daran_proxy_stack.lib.config import load_config
+from daran_proxy_stack.lib.config import load_config, save_config
 from daran_proxy_stack.lib.models import (
     AppConfig,
     AppPaths,
@@ -126,6 +126,26 @@ class TestConfigLoading:
         assert cfg.cascade.relay_host == "10.0.0.1"
         assert cfg.cascade.relay_port == 2080
         assert cfg.cascade.enabled is True
+
+    def test_auto_discovery_uses_local_config(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        f.write_text("mtproxy:\n  listen_port: 2053\n", encoding="utf-8")
+        with unittest.mock.patch(
+            "daran_proxy_stack.lib.config.find_local_config",
+            return_value=f,
+        ):
+            cfg = load_config(None)
+        assert cfg.mtproxy.listen_port == 2053
+
+    def test_save_config_creates_new_file(self, tmp_path):
+        f = tmp_path / "config.yaml"
+        cfg = AppConfig()
+        cfg.mtproxy.listen_port = 2083
+        saved = save_config(cfg, f)
+        assert saved == f
+        assert f.exists()
+        loaded = load_config(f)
+        assert loaded.mtproxy.listen_port == 2083
 
 
 # ── Shell CommandResult ────────────────────────────────────────────────────────

@@ -11,6 +11,19 @@ warp:
   state_dir: /var/lib/daran-proxy-stack/warp
   log_dir: /var/log/daran-proxy-stack
 
+mtproxy:
+  listen_host: 0.0.0.0
+  listen_port: 443
+  stats_port: 8888
+  public_host: null
+  secret: null
+  ad_tag: null
+  run_user: nobody
+  workers: 1
+  container_name: mtproxy
+  image: telegrammessenger/proxy:latest
+  use_host_network: true
+
 cascade:
   relay_host: 127.0.0.1
   relay_port: 1080

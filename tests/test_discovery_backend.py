@@ -411,6 +411,45 @@ class TestMTProxyDetection:
         assert bind is None
         assert port is None
 
+    def test_native_systemd_install_detected_as_running(self):
+        from daran_proxy_stack.discovery.modules.mtproxy import detect_mtproxy
+
+        def _which(name):
+            mapping = {
+                "docker": None,
+                "systemctl": "/usr/bin/systemctl",
+                "mtproto-proxy": None,
+            }
+            return mapping.get(name)
+
+        def _run(cmd):
+            if cmd[:3] == ["/usr/bin/systemctl", "cat", "MTProxy"]:
+                return _ok("ExecStart=/opt/MTProxy/objs/bin/mtproto-proxy -u nobody -p 8888 -H 2053 -S secret\n")
+            if cmd[:3] == ["/usr/bin/systemctl", "is-active", "--quiet"]:
+                return _ok()
+            if cmd[:3] == ["/usr/bin/systemctl", "is-enabled", "--quiet"]:
+                return _ok()
+            if cmd[0] == "/opt/MTProxy/objs/bin/mtproto-proxy" and "--version" in cmd:
+                return _ok("MTProxy 1.0")
+            return _fail()
+
+        with unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy.shutil.which", side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy._systemd_unit_exists", return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy._resolve_native_binary", return_value="/opt/MTProxy/objs/bin/mtproto-proxy"), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy.run", side_effect=_run), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy._tcp_port_listening", return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy._detect_server_ip", return_value="1.2.3.4"), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy._find_generated_dir", return_value=None), \
+             unittest.mock.patch("daran_proxy_stack.discovery.modules.mtproxy._read_secret", return_value="aabbcc"):
+            state = detect_mtproxy()
+
+        assert state.installed is True
+        assert state.running is True
+        assert state.health == ModuleHealth.healthy
+        assert state.manager == ModuleManager.systemd
+        assert state.public_endpoint is not None
+        assert state.public_endpoint.port == 2053
+
 
 # ---------------------------------------------------------------------------
 # Cascade detection

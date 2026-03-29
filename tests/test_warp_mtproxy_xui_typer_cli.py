@@ -309,3 +309,29 @@ class TestMtproxyUninstallCmd:
         # non-zero exit because ok=False, but no crash
         assert result.exit_code != 0
         assert "Сервис не обнаружен" in result.output
+class TestMtproxyOfficialInstallCmd:
+    def test_busy_443_shows_fallbacks(self):
+        conflict = _fail(
+            title="MTProxy: конфликт порта",
+            body="Порт 443 уже занят. Доступные альтернативные порты: 2053, 2083",
+            tip="fallback",
+        )
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.install",
+            return_value=conflict,
+        ):
+            result = runner.invoke(app, ["mtproxy", "official-install"], input="\n")
+        assert result.exit_code == 2
+        assert "2053" in result.output
+        assert "2083" in result.output
+
+    def test_yes_flag_uses_backend(self):
+        success = _ok(title="MTProxy: установка завершена", body="ok")
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.install",
+            return_value=success,
+        ) as mock_install:
+            result = runner.invoke(app, ["mtproxy", "official-install", "--port", "2053", "--yes"])
+        assert result.exit_code == 0
+        assert mock_install.call_args.kwargs["port"] == 2053
+        assert mock_install.call_args.kwargs["confirmed"] is True

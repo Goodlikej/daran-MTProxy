@@ -7,11 +7,14 @@ from __future__ import annotations
 import unittest.mock
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 from daran_proxy_stack.cli.actions import warp as warp_actions
 from daran_proxy_stack.cli.actions import mtproxy as mtproxy_actions
+from daran_proxy_stack.lib.config import load_config
+from daran_proxy_stack.lib.models import AppConfig
 
 
 # ---------------------------------------------------------------------------
@@ -226,15 +229,145 @@ class TestMTProxyActionsStatus:
 
 
 class TestMTProxyActionsInstallGuide:
-    def test_install_guide_returns_info(self):
+    def test_install_guide_returns_preview(self):
         diag = _make_mtp_diag()
         with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.load_config",
+            return_value=AppConfig(),
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.detect_mtproxy",
+            return_value=type("State", (), {
+                "installed": False,
+                "running": False,
+                "health": None,
+                "public_endpoint": None,
+            })(),
+        ), unittest.mock.patch(
             "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.collect_diagnostics",
             return_value=diag,
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.save_generated_files",
+            return_value={"compose": Path("/tmp/compose.yml"), "systemd": Path("/tmp/MTProxy.service")},
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.render_official_doctor_report",
+            return_value="doctor",
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.render_install_command_sequence",
+            return_value="install-cmd",
         ):
             result = mtproxy_actions.install_guide()
+        assert not result.ok
+        assert "doctor" in result.body
+
+    def test_install_returns_conflict_for_busy_443(self):
+        busy_diag = _make_mtp_diag()
+        busy_diag.port_status = "occupied by some listener"
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.load_config",
+            return_value=AppConfig(),
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.detect_mtproxy",
+            return_value=type("State", (), {
+                "installed": False,
+                "running": False,
+                "health": None,
+                "public_endpoint": None,
+            })(),
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.collect_diagnostics",
+            return_value=busy_diag,
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.save_generated_files",
+            return_value={"compose": Path("/tmp/compose.yml"), "systemd": Path("/tmp/MTProxy.service")},
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.render_official_doctor_report",
+            return_value="doctor",
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.is_port_free",
+            side_effect=lambda port: port in (2053, 2087),
+        ):
+            result = mtproxy_actions.install()
+        assert not result.ok
+        assert result.title == "MTProxy: конфликт порта"
+        assert "2053" in result.body
+        assert "2087" in result.body
+
+    def test_install_confirmed_success(self, tmp_path):
+        diag = _make_mtp_diag()
+        config_path = tmp_path / "config.yaml"
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.detect_mtproxy",
+            return_value=type("State", (), {
+                "installed": False,
+                "running": False,
+                "health": None,
+                "public_endpoint": None,
+            })(),
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.collect_diagnostics",
+            return_value=diag,
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.save_generated_files",
+            return_value={"compose": tmp_path / "compose.yml", "systemd": tmp_path / "MTProxy.service"},
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.render_official_doctor_report",
+            return_value="doctor",
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.render_install_command_sequence",
+            return_value="install-cmd",
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.run",
+            return_value=type("R", (), {"ok": True, "stdout": "ok", "stderr": ""})(),
+        ):
+            result = mtproxy_actions.install(confirmed=True, port=2053, config_path=config_path)
         assert result.ok
-        assert "MTProxy" in result.body or "official" in result.body.lower()
+        assert load_config(config_path).mtproxy.listen_port == 2053
+
+    def test_install_confirmed_failure(self, tmp_path):
+        diag = _make_mtp_diag()
+        config_path = tmp_path / "config.yaml"
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.detect_mtproxy",
+            return_value=type("State", (), {
+                "installed": False,
+                "running": False,
+                "health": None,
+                "public_endpoint": None,
+            })(),
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.collect_diagnostics",
+            return_value=diag,
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.save_generated_files",
+            return_value={"compose": tmp_path / "compose.yml", "systemd": tmp_path / "MTProxy.service"},
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.render_official_doctor_report",
+            return_value="doctor",
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.render_install_command_sequence",
+            return_value="install-cmd",
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.run",
+            return_value=type("R", (), {"ok": False, "stdout": "", "stderr": "boom"})(),
+        ):
+            result = mtproxy_actions.install(confirmed=True, port=2053, config_path=config_path)
+        assert not result.ok
+        assert "boom" in result.body
+
+    def test_install_is_idempotent_when_already_running(self):
+        state = type("State", (), {
+            "installed": True,
+            "running": True,
+            "health": mtproxy_actions.ModuleHealth.healthy,
+            "public_endpoint": type("Endpoint", (), {"port": 443})(),
+        })()
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.detect_mtproxy",
+            return_value=state,
+        ):
+            result = mtproxy_actions.install(confirmed=True)
+        assert result.ok
+        assert "уже установлен" in result.body
 
 
 class TestMTProxyActionsShowTgLink:
@@ -366,14 +499,34 @@ class TestMenuMTProxySubMenuActions:
         ):
             self._run(["1", "2", "0", "0"])
 
-    def test_mtproxy_install_guide(self):
-        """Choice '3' = install guide."""
-        diag_mock = _make_mtp_diag()
+    def test_mtproxy_install_cancel(self):
+        """Choice '3' -> install preview -> cancel."""
+        preview = mtproxy_actions.ActionResult(False, "MTProxy: установка", "preview", tip="confirm")
         with unittest.mock.patch(
-            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.collect_diagnostics",
-            return_value=diag_mock,
+            "daran_proxy_stack.cli.actions.mtproxy.install",
+            return_value=preview,
         ):
-            self._run(["1", "3", "0", "0"])
+            self._run(["1", "3", "n", "0", "0"])
+
+    def test_mtproxy_install_with_fallback_and_rediscover(self):
+        conflict = mtproxy_actions.ActionResult(False, "MTProxy: конфликт порта", "busy")
+        preview = mtproxy_actions.ActionResult(False, "MTProxy: установка", "preview", tip="confirm")
+        success = mtproxy_actions.ActionResult(True, "MTProxy: установка завершена", "done")
+        fake_state = object()
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy.install",
+            side_effect=[conflict, preview, success],
+        ) as mock_install, unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.mtproxy._available_fallback_ports",
+            return_value=[2053, 2087],
+        ), unittest.mock.patch(
+            "daran_proxy_stack.cli.menu.cmd_rediscover",
+            return_value=fake_state,
+        ) as mock_rediscover:
+            self._run(["1", "3", "1", "y", "0", "0"])
+        assert mock_install.call_args_list[1].kwargs["port"] == 2053
+        assert mock_install.call_args_list[2].kwargs["port"] == 2053
+        mock_rediscover.assert_called_once()
 
     def test_mtproxy_tg_link_no_artifacts(self):
         """Choice '6' = tg link, no artifacts."""
