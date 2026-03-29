@@ -237,6 +237,96 @@ class TestMTProxyActionsInstallGuide:
         assert "MTProxy" in result.body or "official" in result.body.lower()
 
 
+class TestMTProxyActionsInstall:
+    def test_install_unconfirmed_port_free(self):
+        """Preview план когда порт свободен."""
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            return_value="free",
+        ):
+            result = mtproxy_actions.install(port=443, confirmed=False)
+        assert result.ok
+        assert "443" in result.body
+
+    def test_install_unconfirmed_port_occupied(self):
+        """Preview показывает предупреждение когда порт занят."""
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            return_value="occupied by some listener",
+        ):
+            result = mtproxy_actions.install(port=443, confirmed=False)
+        assert result.ok
+        assert "занят" in result.body or "occupied" in result.body.lower()
+
+    def test_install_unconfirmed_custom_port(self):
+        """Preview использует выбранный порт."""
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            return_value="free",
+        ):
+            result = mtproxy_actions.install(port=2053, confirmed=False)
+        assert result.ok
+        assert "2053" in result.body
+
+    def test_install_confirmed_success(self, tmp_path):
+        """Успешная установка возвращает ok=True."""
+        from daran_proxy_stack.lib.shell import CommandResult
+        bootstrap = tmp_path / "official-bootstrap.sh"
+        bootstrap.write_text("#!/bin/bash\necho 'installed ok'")
+        paths_mock = {"official_bootstrap": bootstrap}
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            return_value="free",
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.save_generated_files",
+                return_value=paths_mock,
+            ):
+                with unittest.mock.patch(
+                    "daran_proxy_stack.cli.actions.mtproxy.run",
+                    return_value=CommandResult("bash ...", 0, "installed ok", ""),
+                ):
+                    result = mtproxy_actions.install(port=443, confirmed=True)
+        assert result.ok
+        assert "завершена" in result.title or "установка" in result.title.lower()
+
+    def test_install_confirmed_failure(self, tmp_path):
+        """Ошибка выполнения bootstrap возвращает ok=False."""
+        from daran_proxy_stack.lib.shell import CommandResult
+        bootstrap = tmp_path / "official-bootstrap.sh"
+        bootstrap.write_text("#!/bin/bash\nexit 1")
+        paths_mock = {"official_bootstrap": bootstrap}
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            return_value="free",
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.save_generated_files",
+                return_value=paths_mock,
+            ):
+                with unittest.mock.patch(
+                    "daran_proxy_stack.cli.actions.mtproxy.run",
+                    return_value=CommandResult("bash ...", 1, "", "build failed"),
+                ):
+                    result = mtproxy_actions.install(port=443, confirmed=True)
+        assert not result.ok
+        assert "ошибка" in result.title.lower()
+
+    def test_install_confirmed_save_error(self):
+        """Ошибка генерации файлов возвращает ok=False."""
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            return_value="free",
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.save_generated_files",
+                side_effect=OSError("disk full"),
+            ):
+                result = mtproxy_actions.install(port=443, confirmed=True)
+        assert not result.ok
+        assert "disk full" in result.body
+
+
 class TestMTProxyActionsShowTgLink:
     def test_no_artifacts_dir(self):
         with unittest.mock.patch(
@@ -366,14 +456,39 @@ class TestMenuMTProxySubMenuActions:
         ):
             self._run(["1", "2", "0", "0"])
 
-    def test_mtproxy_install_guide(self):
-        """Choice '3' = install guide."""
-        diag_mock = _make_mtp_diag()
+    def test_mtproxy_install_port_free_cancel(self):
+        """Choice '3' = install flow, порт 443 свободен, пользователь отменяет."""
         with unittest.mock.patch(
-            "daran_proxy_stack.cli.actions.mtproxy.mtp_mod.collect_diagnostics",
-            return_value=diag_mock,
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            return_value="free",
         ):
-            self._run(["1", "3", "0", "0"])
+            # 1=MTProxy submenu, 3=install flow, "n"=cancel confirm, 0=back, 0=exit
+            self._run(["1", "3", "n", "0", "0"])
+
+    def test_mtproxy_install_port_occupied_pick_alt_cancel(self):
+        """Choice '3' = install flow, порт 443 занят, выбор alt порта 2053, отмена."""
+        def _mock_port_status(port: int) -> str:
+            return "free" if port != 443 else "occupied by some listener"
+
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            side_effect=_mock_port_status,
+        ):
+            # 1=MTProxy submenu, 3=install flow, "1"=pick first alt (2053),
+            # "n"=cancel confirm, 0=back, 0=exit
+            self._run(["1", "3", "1", "n", "0", "0"])
+
+    def test_mtproxy_install_port_occupied_cancel_selection(self):
+        """Choice '3' = install flow, порт 443 занят, пользователь отменяет выбор порта."""
+        def _mock_port_status(port: int) -> str:
+            return "free" if port != 443 else "occupied by some listener"
+
+        with unittest.mock.patch(
+            "daran_proxy_stack.modules.mtproxy.detect_port_status",
+            side_effect=_mock_port_status,
+        ):
+            # 1=MTProxy submenu, 3=install, "0"=cancel port selection, 0=back, 0=exit
+            self._run(["1", "3", "0", "0", "0"])
 
     def test_mtproxy_tg_link_no_artifacts(self):
         """Choice '6' = tg link, no artifacts."""
