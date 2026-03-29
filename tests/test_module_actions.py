@@ -143,6 +143,10 @@ class TestWarpActionsConnect:
             result = warp_actions.connect(confirmed=True)
         assert result.ok
 
+    def test_connect_unconfirmed_warns_about_ssh(self):
+        result = warp_actions.connect(confirmed=False)
+        assert "SSH" in result.body
+
 
 class TestWarpActionsDisconnect:
     def test_disconnect_unconfirmed(self):

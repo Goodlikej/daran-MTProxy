@@ -434,6 +434,15 @@ class TestWarpActions:
         assert result.ok is False
         assert "warp-cli not found" in result.body
 
+    def test_connect_warp_blocked_in_ssh_session(self, tmp_path):
+        with unittest.mock.patch("daran_proxy_stack.modules.warp.shutil.which", return_value="/usr/bin/warp-cli"), \
+             unittest.mock.patch.dict("daran_proxy_stack.modules.warp.os.environ", {"SSH_CONNECTION": "1"}, clear=False):
+            cfg = WarpConfig(state_dir=str(tmp_path), log_dir=str(tmp_path))
+            result = warp.connect_warp(cfg)
+        assert result.ok is False
+        assert "SSH" in result.body
+        assert "DARAN_ALLOW_WARP_REMOTE=1" in result.body
+
     def test_disconnect_warp_missing_cli(self):
         with unittest.mock.patch("daran_proxy_stack.modules.warp.shutil.which", return_value=None):
             result = warp.disconnect_warp(WarpConfig())

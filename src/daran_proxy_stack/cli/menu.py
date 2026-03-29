@@ -327,11 +327,24 @@ def _wip_action(action_name: str) -> None:
     ))
 
 
-def _ask_confirm(input_fn: Callable[[], str]) -> bool:
+def _read_line(prompt: str = "  выбор > ") -> str:
+    """Read one line from stdin with a plain prompt.
+
+    Keep prompts ASCII/plain to avoid locale/TTY decoding issues in mixed SSH
+    environments. Higher-level UI text can stay in Russian.
+    """
+    return input(prompt)
+
+
+
+def _ask_confirm(input_fn: Callable[[], str] | None = None) -> bool:
     """Ask user for y/n confirmation. Returns True if confirmed."""
-    console.print("  [bold yellow]Подтвердить? [y/N]:[/bold yellow] ", end="")
     try:
-        answer = input_fn().strip().lower()
+        if input_fn is None:
+            answer = _read_line("  confirm [y/N] > ").strip().lower()
+        else:
+            console.print("  [bold yellow]Подтвердить? [y/N][/bold yellow]")
+            answer = input_fn().strip().lower()
         return answer in ("y", "yes", "да", "д")
     except (EOFError, KeyboardInterrupt):
         return False
@@ -344,6 +357,14 @@ def _show_action_result(result) -> None:
     if result.tip:
         body += f"\n\n[dim]{result.tip}[/dim]"
     console.print(Panel(body, title=result.title, border_style=border, expand=False))
+
+
+def _resolve_confirm_input(input_fn: Callable[[], str]) -> Callable[[], str] | None:
+    """Use plain stdin prompt only for the real built-in menu reader; keep injected readers for tests."""
+    if getattr(input_fn, "__module__", "") == __name__ and getattr(input_fn, "__name__", "") == "<lambda>":
+        return None
+    return input_fn
+
 
 
 def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
@@ -381,7 +402,7 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
             # Show plan first
             preview = mtproxy_actions.uninstall(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = mtproxy_actions.uninstall(confirmed=True)
                 _show_action_result(result)
                 if result.ok:
@@ -471,7 +492,7 @@ def _run_cascade_add_rule(input_fn: Callable[[], str]) -> None:
 
     if preview.ok is False and "Неверный" not in preview.body and "не указан" not in preview.body:
         # It's a preview (not a validation error) — ask confirm
-        if _ask_confirm(input_fn):
+        if _ask_confirm(_resolve_confirm_input(input_fn)):
             result = cascade_actions.add_rule(
                 protocol=protocol,
                 listen_port=listen_port,
@@ -503,7 +524,7 @@ def _run_cascade_remove_rule(input_fn: Callable[[], str]) -> None:
     _show_action_result(preview)
 
     if preview.ok is False and "не найдено" not in preview.body:
-        if _ask_confirm(input_fn):
+        if _ask_confirm(_resolve_confirm_input(input_fn)):
             result = cascade_actions.remove_rule(rule_id, confirmed=True)
             _show_action_result(result)
         else:
@@ -548,7 +569,7 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
         elif choice == "4":
             preview = cascade_actions.apply_config(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = cascade_actions.apply_config(confirmed=True)
                 _show_action_result(result)
                 if result.ok:
@@ -575,7 +596,7 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
             _show_action_result(preview)
             if not preview.ok:
                 # There are rules to reset — ask confirm
-                if _ask_confirm(input_fn):
+                if _ask_confirm(_resolve_confirm_input(input_fn)):
                     result = cascade_actions.reset_rules(confirmed=True)
                     _show_action_result(result)
                 else:
@@ -624,7 +645,7 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
             # Show plan, ask confirm
             preview = warp_actions.install(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = warp_actions.install(confirmed=True)
                 _show_action_result(result)
                 if result.ok:
@@ -635,7 +656,7 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
         elif choice == "4":
             preview = warp_actions.uninstall(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = warp_actions.uninstall(confirmed=True)
                 _show_action_result(result)
                 if result.ok:
@@ -646,7 +667,7 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
         elif choice == "5":
             preview = warp_actions.connect(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = warp_actions.connect(confirmed=True)
                 _show_action_result(result)
                 if result.ok:
@@ -657,7 +678,7 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
         elif choice == "6":
             preview = warp_actions.disconnect(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = warp_actions.disconnect(confirmed=True)
                 _show_action_result(result)
                 if result.ok:
@@ -668,7 +689,7 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
         elif choice == "7":
             preview = warp_actions.socks_up(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = warp_actions.socks_up(confirmed=True)
                 _show_action_result(result)
             else:
@@ -677,7 +698,7 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
         elif choice == "8":
             preview = warp_actions.socks_down(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = warp_actions.socks_down(confirmed=True)
                 _show_action_result(result)
             else:
@@ -724,7 +745,7 @@ def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
             # Upstream-backed installer: mozaroc/x-ui-pro (temporary external backend)
             preview = xui_actions.install_xui_pro_upstream(confirmed=False)
             _show_action_result(preview)
-            if _ask_confirm(input_fn):
+            if _ask_confirm(_resolve_confirm_input(input_fn)):
                 result = xui_actions.install_xui_pro_upstream(confirmed=True)
                 _show_action_result(result)
             else:
@@ -797,10 +818,10 @@ def run_menu(
     """Запустить интерактивное меню.
 
     Args:
-        input_fn: Переопределение ввода (для тестов). По умолчанию: input().
+        input_fn: Переопределение ввода (для тестов). По умолчанию: stdin line reader.
         once:     Если True — выйти после первой итерации (для тестов).
     """
-    _input = input_fn or (lambda: input("  выбор > ").strip())
+    _input = input_fn or (lambda: _read_line("  choice > ").strip())
     last_state: ObservedState | None = None
 
     # Автоматический discovery при старте

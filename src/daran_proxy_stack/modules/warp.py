@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -223,6 +224,17 @@ def connect_warp(config: WarpConfig) -> WarpActionResult:
     warp_cli_path = shutil.which("warp-cli")
     if not warp_cli_path:
         return WarpActionResult(False, "WARP connect failed", "warp-cli not found")
+
+    ssh_session = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"))
+    if ssh_session and os.environ.get("DARAN_ALLOW_WARP_REMOTE") != "1":
+        return WarpActionResult(
+            False,
+            "WARP connect blocked",
+            "Обнаружена SSH-сессия. Подключение WARP может убить текущий удалённый доступ к VPS.\n\n"
+            "Если ты правда хочешь рискнуть, запусти команду с явным флагом окружения:\n"
+            "  DARAN_ALLOW_WARP_REMOTE=1 daran-net warp connect\n\n"
+            "Рекомендация: сначала открыть консоль провайдера/VNC, а уже потом тестировать WARP connect.",
+        )
 
     commands = [
         f"{warp_cli_path} --accept-tos registration new || true",

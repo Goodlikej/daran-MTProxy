@@ -107,17 +107,32 @@ def _probe_web_ui(port: int = _XUI_DEFAULT_WEB_PORT) -> bool:
 
 
 def _detect_xui_version(binary: str) -> str | None:
-    """Attempt to read the 3x-ui version from the binary."""
-    r = run([binary, "version"])
-    if r.ok and r.stdout.strip():
-        return r.stdout.strip().splitlines()[0]
+    """Attempt to read the 3x-ui version without mistaking CLI errors for a version string."""
+    probes = [
+        [binary, "version"],
+        [binary, "--version"],
+    ]
+    bad_markers = ("invalid subcommands", "unknown command", "usage:", "flag provided but not defined")
+
+    for cmd in probes:
+        r = run(cmd)
+        text = (r.stdout or r.stderr or "").strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if any(marker in lowered for marker in bad_markers):
+            continue
+        return text.splitlines()[0]
+
     # fallback: check a version file that some installers write
-    ver_file = Path("/usr/local/x-ui/bin/version")
-    if ver_file.exists():
-        try:
-            return ver_file.read_text().strip()
-        except OSError:
-            pass
+    for candidate in (Path("/usr/local/x-ui/bin/version"), Path("/usr/local/x-ui/version")):
+        if candidate.exists():
+            try:
+                text = candidate.read_text().strip()
+            except OSError:
+                continue
+            if text:
+                return text.splitlines()[0]
     return None
 
 

@@ -337,6 +337,19 @@ def detect_mtproxy() -> MTProxyState:
     # ── Health ────────────────────────────────────────────────────────────
     installed = bool(container_name is not None or (native and manager != ModuleManager.none))
 
+    # Guard against stale native breadcrumbs: a leftover binary or unit should
+    # not appear as an installed MTProxy if there is no runnable state, no
+    # listening port, and no generated artifacts to support the claim.
+    if installed and container_name is None and not container_running:
+        has_generated_artifacts = generated_dir is not None
+        if not has_generated_artifacts and not port_listening:
+            installed = False
+            manager = ModuleManager.none
+            version = None
+            config_paths = []
+            confidence = DiscoveryConfidence.partial
+            confidence_reasons.append("stale mtproxy binary/unit without runnable state")
+
     if not installed and not docker:
         health = ModuleHealth.not_installed
     elif container_running and port_listening and secret:

@@ -377,3 +377,9 @@ class TestRunMenu:
 
         with unittest.mock.patch("daran_proxy_stack.cli.menu.console"):
             run_menu(input_fn=raise_eof)  # не должен бросать исключение
+
+    def test_confirm_uses_plain_prompt_without_input_fn(self):
+        with unittest.mock.patch("builtins.input", return_value="yes") as mock_input:
+            from daran_proxy_stack.cli.menu import _ask_confirm
+            assert _ask_confirm(None) is True
+            mock_input.assert_called_once()

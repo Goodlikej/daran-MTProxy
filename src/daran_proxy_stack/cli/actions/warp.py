@@ -99,7 +99,8 @@ def connect(confirmed: bool = False) -> ActionResult:
             "WARP: подключение",
             "Выполнит:\n"
             "  warp-cli registration new  (если ещё не зарегистрирован)\n"
-            "  warp-cli connect",
+            "  warp-cli connect\n\n"
+            "[yellow]⚠ Если вы сидите на VPS по SSH, WARP может уронить удалённый доступ.[/yellow]",
             tip="Нажмите [y] для подтверждения.",
         )
     cfg = default_config()
