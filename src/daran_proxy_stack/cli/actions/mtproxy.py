@@ -1,7 +1,7 @@
 """Real MTProxy actions for the terminal menu.
 
-Wraps existing modules/mtproxy.py logic and systemctl/docker calls.
-All destructive operations require confirmed=True.
+Wraps existing MTProxy module helpers and provides preview/confirm flows
+aligned with the rest of the terminal menu actions.
 """
 from __future__ import annotations
 
@@ -9,9 +9,14 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from daran_proxy_stack.lib.models import MTProxyConfig
+from daran_proxy_stack.discovery.modules.mtproxy import detect_mtproxy
+from daran_proxy_stack.discovery.schema import ModuleHealth
+from daran_proxy_stack.lib.config import default_config_path, load_config, save_config
+from daran_proxy_stack.lib.models import AppConfig, MTProxyConfig
 from daran_proxy_stack.lib.shell import run
 from daran_proxy_stack.modules import mtproxy as mtp_mod
+
+FALLBACK_PORTS = [2053, 2083, 2087, 2096]
 
 
 @dataclass
@@ -22,17 +27,75 @@ class ActionResult:
     tip: str = ""
 
 
-def default_config() -> MTProxyConfig:
-    return MTProxyConfig()
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[4]
+
+
+def default_config(config_path: Path | None = None) -> MTProxyConfig:
+    return load_config(config_path).mtproxy
+
+
+def _resolve_mtproxy_config(
+    app_cfg: AppConfig,
+    *,
+    port: int | None = None,
+    stats_port: int | None = None,
+) -> AppConfig:
+    mtproxy_data = app_cfg.mtproxy.model_dump()
+    if port is not None:
+        mtproxy_data["listen_port"] = port
+    if stats_port is not None:
+        mtproxy_data["stats_port"] = stats_port
+    return AppConfig(
+        paths=app_cfg.paths,
+        warp=app_cfg.warp,
+        cascade=app_cfg.cascade,
+        mtproxy=MTProxyConfig(**mtproxy_data),
+    )
+
+
+def _validate_port(port: int) -> str | None:
+    if port < 1 or port > 65535:
+        return "Port must be in range 1..65535."
+    return None
+
+
+def _available_fallback_ports() -> list[int]:
+    return [candidate for candidate in FALLBACK_PORTS if mtp_mod.is_port_free(candidate)]
+
+
+def _save_selected_port(port: int, config_path: Path | None = None) -> Path:
+    target = config_path or default_config_path()
+    app_cfg = load_config(target)
+    updated_cfg = _resolve_mtproxy_config(app_cfg, port=port)
+    return save_config(updated_cfg, target)
+
+
+def _find_generated_dir() -> Path | None:
+    """Locate the generated artifacts directory."""
+    candidates = [
+        Path("/opt/daran-proxy-stack/artifacts/generated/mtproxy"),
+        Path("/var/lib/daran-proxy-stack/generated/mtproxy"),
+    ]
+    here = Path(__file__).resolve()
+    for p in here.parents:
+        candidate = p / "artifacts" / "generated" / "mtproxy"
+        if candidate.exists():
+            candidates.insert(0, candidate)
+            break
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Read-only
 # ---------------------------------------------------------------------------
 
-def status() -> ActionResult:
+def status(config_path: Path | None = None) -> ActionResult:
     """Collect MTProxy diagnostics."""
-    cfg = default_config()
+    cfg = default_config(config_path)
     try:
         diag = mtp_mod.collect_diagnostics(cfg)
     except Exception as exc:
@@ -58,7 +121,6 @@ def status() -> ActionResult:
 
 def show_tg_link() -> ActionResult:
     """Show tg:// link if available from generated artifacts."""
-    # Check generated artifacts
     generated_dir = _find_generated_dir()
     if not generated_dir:
         return ActionResult(
@@ -79,7 +141,7 @@ def show_tg_link() -> ActionResult:
             if tg_link:
                 secret = secret_file.read_text(encoding="utf-8").strip() if secret_file.exists() else "n/a"
                 body = (
-                    f"tg://proxy ссылка для клиентов:\n\n"
+                    "tg://proxy ссылка для клиентов:\n\n"
                     f"  {tg_link}\n\n"
                     f"Секрет: {secret}\n"
                     f"Файл:   {link_file}"
@@ -88,7 +150,6 @@ def show_tg_link() -> ActionResult:
         except OSError:
             pass
 
-    # Try to build from secret + server IP
     cfg = default_config()
     if secret_file.exists():
         try:
@@ -97,7 +158,7 @@ def show_tg_link() -> ActionResult:
             if server_ip and secret:
                 tg_link = mtp_mod.render_tg_link(cfg, public_ip=server_ip, secret=secret)
                 body = (
-                    f"tg://proxy ссылка (вычислена):\n\n"
+                    "tg://proxy ссылка (вычислена):\n\n"
                     f"  {tg_link}\n\n"
                     f"Секрет: {secret}\n"
                     f"IP:     {server_ip}\n"
@@ -115,39 +176,16 @@ def show_tg_link() -> ActionResult:
     )
 
 
-def _find_generated_dir() -> Path | None:
-    """Locate the generated artifacts directory."""
-    candidates = [
-        Path("/opt/daran-proxy-stack/artifacts/generated/mtproxy"),
-        Path("/var/lib/daran-proxy-stack/generated/mtproxy"),
-    ]
-    # Dev-mode: relative to project root
-    here = Path(__file__).resolve()
-    for p in here.parents:
-        candidate = p / "artifacts" / "generated" / "mtproxy"
-        if candidate.exists():
-            candidates.insert(0, candidate)
-            break
-    for p in candidates:
-        if p.exists():
-            return p
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Service control (systemctl or docker)
 # ---------------------------------------------------------------------------
 
 def _detect_manager() -> tuple[str, str | None]:
-    """Return (manager_type, unit_or_container).
-
-    manager_type: 'systemd' | 'docker' | 'none'
-    """
+    """Return (manager_type, unit_or_container)."""
     systemctl = shutil.which("systemctl")
     if systemctl:
         r = run([systemctl, "is-active", "--quiet", "MTProxy"])
-        if r.returncode in (0, 3):  # 3 = inactive (but unit exists)
-            # check if unit file exists
+        if r.returncode in (0, 3):
             r2 = run([systemctl, "cat", "MTProxy"])
             if r2.ok or r.returncode == 0:
                 return "systemd", "MTProxy"
@@ -188,34 +226,111 @@ def restart() -> ActionResult:
     )
 
 
-def install_guide() -> ActionResult:
-    """Return installation guide and commands (read-only, no execution)."""
-    cfg = default_config()
-    try:
-        diag = mtp_mod.collect_diagnostics(cfg)
-        generated_base = Path(__file__).resolve()
-        for p in generated_base.parents:
-            if (p / "artifacts").exists():
-                generated_base = p
-                break
-        doctor_report = mtp_mod.render_official_doctor_report(
-            cfg,
-            diag,
-            generated_base / "artifacts" / "generated" / "mtproxy",
-        )
-    except Exception as exc:
-        doctor_report = f"(doctor check failed: {exc})"
+# ---------------------------------------------------------------------------
+# Install / uninstall
+# ---------------------------------------------------------------------------
 
-    body = (
-        "Официальная установка MTProxy:\n\n"
-        "  daran-net mtproxy official-install\n\n"
-        "Или пошагово:\n"
-        "  daran-net mtproxy official-build --yes\n"
-        "  daran-net mtproxy official-fetch --yes\n"
-        "  daran-net mtproxy systemd-apply --yes\n\n"
-        f"--- Doctor report ---\n{doctor_report}"
+def install(
+    *,
+    confirmed: bool = False,
+    port: int | None = None,
+    stats_port: int | None = None,
+    config_path: Path | None = None,
+) -> ActionResult:
+    """Preview or execute the official MTProxy install flow."""
+    base_cfg = load_config(config_path)
+    target_port = port if port is not None else base_cfg.mtproxy.listen_port
+    target_stats_port = stats_port if stats_port is not None else base_cfg.mtproxy.stats_port
+
+    port_error = _validate_port(target_port)
+    if port_error:
+        return ActionResult(False, "MTProxy: установка", port_error)
+
+    state = detect_mtproxy()
+    if state.installed and state.running and state.health in (ModuleHealth.healthy, ModuleHealth.degraded):
+        observed_port = None
+        if state.public_endpoint is not None:
+            observed_port = state.public_endpoint.port
+        port_note = f" на порту {observed_port}" if observed_port else ""
+        return ActionResult(True, "MTProxy: установка", f"MTProxy уже установлен и работает{port_note}.")
+
+    resolved_cfg = _resolve_mtproxy_config(base_cfg, port=target_port, stats_port=target_stats_port)
+    diagnostics = mtp_mod.collect_diagnostics(resolved_cfg.mtproxy)
+    project_root = _project_root()
+    paths = mtp_mod.save_generated_files(project_root, resolved_cfg.mtproxy, public_ip=resolved_cfg.mtproxy.public_host)
+    generated_dir = paths["compose"].parent
+    doctor_report = mtp_mod.render_official_doctor_report(resolved_cfg.mtproxy, diagnostics, generated_dir)
+    command = mtp_mod.render_install_command_sequence(resolved_cfg.mtproxy, str(paths["systemd"]))
+
+    port_busy = diagnostics.port_status != "free"
+    if port_busy and target_port == 443:
+        available = _available_fallback_ports()
+        choices = ", ".join(str(p) for p in available) if available else "нет свободных кандидатов"
+        body = (
+            "Порт 443 уже занят.\n"
+            f"Доступные альтернативные порты: {choices}\n\n"
+            f"--- Doctor report ---\n{doctor_report}"
+        )
+        return ActionResult(
+            False,
+            "MTProxy: конфликт порта",
+            body,
+            tip="Выберите один из предложенных fallback-портов и повторите установку.",
+        )
+
+    if port_busy:
+        return ActionResult(
+            False,
+            "MTProxy: установка",
+            f"Порт {target_port} уже занят.\n\n--- Doctor report ---\n{doctor_report}",
+        )
+
+    if not confirmed:
+        body = (
+            "Будет выполнена официальная установка MTProxy.\n\n"
+            f"Listen port: {target_port}\n"
+            f"Stats port:  {target_stats_port}\n"
+            f"Config path: {config_path or default_config_path()}\n\n"
+            f"--- Doctor report ---\n{doctor_report}\n\n"
+            f"Команда:\n{command}"
+        )
+        return ActionResult(
+            False,
+            "MTProxy: установка",
+            body,
+            tip="Нажмите [y] для подтверждения установки.",
+        )
+
+    save_path = _save_selected_port(target_port, config_path=config_path)
+    result = run(["bash", "-lc", command])
+    if result.ok:
+        body = (
+            "Official MTProxy install sequence completed.\n\n"
+            f"Listen port saved to: {save_path}\n"
+            f"stdout:\n{result.stdout or '(empty)'}"
+        )
+        return ActionResult(True, "MTProxy: установка завершена", body)
+
+    return ActionResult(
+        False,
+        "MTProxy: установка не удалась",
+        f"Listen port saved to: {save_path}\n\nstderr:\n{result.stderr or '(empty)'}",
     )
-    return ActionResult(True, "MTProxy: установка", body, tip="Запустите команды в отдельном терминале.")
+
+
+def install_guide(
+    *,
+    port: int | None = None,
+    stats_port: int | None = None,
+    config_path: Path | None = None,
+) -> ActionResult:
+    """Backward-compatible alias for the install preview."""
+    return install(
+        confirmed=False,
+        port=port,
+        stats_port=stats_port,
+        config_path=config_path,
+    )
 
 
 def uninstall(confirmed: bool = False) -> ActionResult:

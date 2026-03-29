@@ -1,17 +1,11 @@
 """MTProxy observed-state detector.
 
-Detects: Docker container state, listening port, secret presence,
-fake TLS host, tg:// link availability.
-
-Per observed-state-model.md health rules:
-  healthy:     container running + port listening + secret present
-  degraded:    install exists but one artifact missing
-  broken:      config exists but container dead or required data missing
-  stopped:     installed but intentionally not running
-  not_installed: no Docker container and no native binary
+Detects Docker and official native/systemd MTProxy installs, including
+public endpoint, secret presence, and generated client artifacts.
 """
 from __future__ import annotations
 
+import re
 import shutil
 import socket
 from dataclasses import dataclass
@@ -29,10 +23,10 @@ from daran_proxy_stack.discovery.schema import (
 )
 from daran_proxy_stack.lib.shell import run
 
+_OFFICIAL_INSTALL_DIR = Path("/opt/MTProxy")
+_OFFICIAL_NATIVE_BINARY = _OFFICIAL_INSTALL_DIR / "objs" / "bin" / "mtproto-proxy"
+_SYSTEMD_UNIT_PATH = Path("/etc/systemd/system/MTProxy.service")
 
-# ---------------------------------------------------------------------------
-# MTProxy-specific sub-structures
-# ---------------------------------------------------------------------------
 
 @dataclass
 class MTProxyPublicEndpoint:
@@ -83,18 +77,11 @@ class MTProxyState(BaseModuleState):
         return d
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Well-known artifacts path (relative to project root fallback; real deployments
-# use /opt/daran-proxy-stack or similar — we probe common locations).
 _GENERATED_CANDIDATES = [
     Path("/opt/daran-proxy-stack/artifacts/generated/mtproxy"),
     Path("/var/lib/daran-proxy-stack/generated/mtproxy"),
 ]
 
-# Also check relative to this file's repo root (dev mode).
 _HERE = Path(__file__).resolve()
 for _p in _HERE.parents:
     _candidate = _p / "artifacts" / "generated" / "mtproxy"
@@ -119,11 +106,16 @@ def _read_secret(generated_dir: Path | None) -> str | None:
             return secret_file.read_text(encoding="utf-8").strip() or None
         except OSError:
             pass
+    official_secret = _OFFICIAL_INSTALL_DIR / "proxy-secret"
+    if official_secret.exists():
+        try:
+            return official_secret.read_text(encoding="utf-8").strip() or None
+        except OSError:
+            pass
     return None
 
 
 def _read_fake_tls_host(generated_dir: Path | None) -> str | None:
-    """Try to extract fake TLS host from docker-compose.yml if present."""
     if generated_dir is None:
         return None
     compose = generated_dir / "docker-compose.yml"
@@ -131,8 +123,6 @@ def _read_fake_tls_host(generated_dir: Path | None) -> str | None:
         return None
     try:
         text = compose.read_text(encoding="utf-8")
-        # Look for -d <hostname> pattern
-        import re
         m = re.search(r"-d\s+([\w.\-]+)", text)
         if m:
             return m.group(1)
@@ -161,22 +151,11 @@ def _detect_server_ip() -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# Docker container inspection
-# ---------------------------------------------------------------------------
-
-# Container image names we recognise
 _MTPROXY_IMAGES = ["telegrammessenger/proxy", "ghcr.io/telegramdesktop/mtproto-proxy"]
-# Default container name we write; user may have renamed it.
 _DEFAULT_CONTAINER_NAME = "mtproxy"
 
 
 def _docker_find_container(docker: str) -> tuple[str | None, str | None, str | None, str | None]:
-    """Find any mtproxy container by image or name.
-
-    Returns (container_name, docker_status, ports_str, image_tag) or all None.
-    """
-    # Try by image ancestor first
     for image in _MTPROXY_IMAGES:
         result = run([
             docker, "ps", "-a",
@@ -193,7 +172,6 @@ def _docker_find_container(docker: str) -> tuple[str | None, str | None, str | N
             if name:
                 return name, status, ports, img
 
-    # Fallback: try well-known container name
     result = run([
         docker, "ps", "-a",
         "--filter", f"name={_DEFAULT_CONTAINER_NAME}",
@@ -213,7 +191,6 @@ def _docker_find_container(docker: str) -> tuple[str | None, str | None, str | N
 
 
 def _parse_docker_port(ports_str: str) -> tuple[str | None, int | None]:
-    """Extract (bind, port) from docker port mapping like '0.0.0.0:443->443/tcp'."""
     if not ports_str:
         return None, None
     for token in ports_str.split(","):
@@ -227,14 +204,51 @@ def _parse_docker_port(ports_str: str) -> tuple[str | None, int | None]:
     return None, None
 
 
-# ---------------------------------------------------------------------------
-# Public detector
-# ---------------------------------------------------------------------------
+def _systemd_unit_exists(systemctl: str | None) -> bool:
+    if systemctl:
+        result = run([systemctl, "cat", "MTProxy"])
+        if result.ok:
+            return True
+    return _SYSTEMD_UNIT_PATH.exists()
+
+
+def _read_systemd_unit_text(systemctl: str | None) -> str:
+    if systemctl:
+        result = run([systemctl, "cat", "MTProxy"])
+        if result.ok and result.stdout.strip():
+            return result.stdout
+    if _SYSTEMD_UNIT_PATH.exists():
+        try:
+            return _SYSTEMD_UNIT_PATH.read_text(encoding="utf-8")
+        except OSError:
+            return ""
+    return ""
+
+
+def _parse_mtproxy_port_from_text(text: str) -> int | None:
+    if not text:
+        return None
+    match = re.search(r"(?:^|\s)-H\s+(\d+)(?:\s|$)", text)
+    if match:
+        return int(match.group(1))
+    return None
+
+
+def _resolve_native_binary() -> str | None:
+    binary = shutil.which("mtproto-proxy")
+    if binary:
+        return binary
+    if _OFFICIAL_NATIVE_BINARY.exists():
+        return str(_OFFICIAL_NATIVE_BINARY)
+    return None
+
 
 def detect_mtproxy() -> MTProxyState:
     """Detect MTProxy installation and runtime state. Never raises."""
     docker = shutil.which("docker")
-    native = shutil.which("mtproto-proxy")
+    systemctl = shutil.which("systemctl")
+    native = _resolve_native_binary()
+    unit_exists = _systemd_unit_exists(systemctl)
 
     now = datetime.now(timezone.utc).isoformat()
     warnings: list[str] = []
@@ -242,8 +256,7 @@ def detect_mtproxy() -> MTProxyState:
     confidence = DiscoveryConfidence.full
     confidence_reasons: list[str] = []
 
-    # ── Not installed ──────────────────────────────────────────────────────
-    if not docker and not native:
+    if not docker and not native and not unit_exists:
         return MTProxyState(
             installed=False,
             enabled=False,
@@ -255,13 +268,13 @@ def detect_mtproxy() -> MTProxyState:
             confidence=DiscoveryConfidence.full,
         )
 
-    # ── Docker path ────────────────────────────────────────────────────────
     container_name: str | None = None
     container_running = False
     version: str | None = None
     observed_port: int | None = None
     observed_bind: str | None = None
     manager = ModuleManager.none
+    config_paths: list[str] = []
 
     if docker:
         try:
@@ -278,53 +291,65 @@ def detect_mtproxy() -> MTProxyState:
             confidence = DiscoveryConfidence.partial
             confidence_reasons.append("docker inspection failed")
 
-    # ── Native binary fallback ─────────────────────────────────────────────
     if native and manager == ModuleManager.none:
-        manager = ModuleManager.process
-        container_name = None
-        # Try systemd
-        systemctl = shutil.which("systemctl")
-        if systemctl:
+        manager = ModuleManager.systemd if unit_exists else ModuleManager.process
+        unit_text = _read_systemd_unit_text(systemctl)
+        if unit_text:
+            config_paths.append(str(_SYSTEMD_UNIT_PATH))
+            observed_port = _parse_mtproxy_port_from_text(unit_text) or observed_port
+
+        if systemctl and unit_exists:
             sc = run([systemctl, "is-active", "--quiet", "MTProxy"])
             container_running = sc.returncode == 0
+        else:
+            container_running = False
+
         ver = run([native, "--version"])
         if ver.ok and ver.stdout.strip():
             version = ver.stdout.strip().splitlines()[0]
+        elif Path(native).exists():
+            version = Path(native).name
 
-    # ── Port listen check ──────────────────────────────────────────────────
+        if observed_port is None:
+            generated_dir = _find_generated_dir()
+            if generated_dir is not None:
+                service_text = (generated_dir / "MTProxy.service")
+                if service_text.exists():
+                    try:
+                        observed_port = _parse_mtproxy_port_from_text(service_text.read_text(encoding="utf-8"))
+                    except OSError:
+                        pass
+
     listen_port = observed_port
     port_listening = False
     if listen_port:
-        port_listening = _tcp_port_listening("0.0.0.0", listen_port) or \
-                         _tcp_port_listening("127.0.0.1", listen_port)
+        port_listening = _tcp_port_listening("0.0.0.0", listen_port) or _tcp_port_listening("127.0.0.1", listen_port)
     elif container_running:
-        warnings.append("container running but no port mapping detected")
+        warnings.append("runtime is active but listen port could not be determined")
         confidence = DiscoveryConfidence.partial
-        confidence_reasons.append("port not determinable from container info")
+        confidence_reasons.append("listen port not determinable")
 
-    # ── Artifacts ─────────────────────────────────────────────────────────
     generated_dir = _find_generated_dir()
     secret = _read_secret(generated_dir)
     fake_tls_host = _read_fake_tls_host(generated_dir)
     server_ip = _detect_server_ip()
 
-    tg_link: str | None = None
-    if server_ip and listen_port and secret:
-        tg_link = _build_tg_link(server_ip, listen_port, secret)
-    elif not secret:
-        if container_running or (native and container_running):
-            warnings.append("secret not found in generated artifacts; tg:// link unavailable")
-            confidence = DiscoveryConfidence.partial
-            confidence_reasons.append("secret missing from artifacts")
-
-    # ── Config paths ───────────────────────────────────────────────────────
-    config_paths: list[str] = []
     if generated_dir:
         compose = generated_dir / "docker-compose.yml"
         if compose.exists():
             config_paths.append(str(compose))
+        generated_service = generated_dir / "MTProxy.service"
+        if generated_service.exists() and str(generated_service) not in config_paths:
+            config_paths.append(str(generated_service))
 
-    # ── Ports list ─────────────────────────────────────────────────────────
+    tg_link: str | None = None
+    if server_ip and listen_port and secret:
+        tg_link = _build_tg_link(server_ip, listen_port, secret)
+    elif not secret and container_running:
+        warnings.append("secret not found in generated artifacts; tg:// link unavailable")
+        confidence = DiscoveryConfidence.partial
+        confidence_reasons.append("secret missing from artifacts")
+
     ports: list[PortEntry] = []
     if listen_port:
         ports.append(PortEntry(
@@ -334,10 +359,9 @@ def detect_mtproxy() -> MTProxyState:
             purpose="telegram-mtproxy",
         ))
 
-    # ── Health ────────────────────────────────────────────────────────────
-    installed = bool(container_name is not None or (native and manager != ModuleManager.none))
+    installed = bool(container_name is not None or native or unit_exists)
 
-    if not installed and not docker:
+    if not installed:
         health = ModuleHealth.not_installed
     elif container_running and port_listening and secret:
         health = ModuleHealth.healthy
@@ -345,14 +369,14 @@ def detect_mtproxy() -> MTProxyState:
         health = ModuleHealth.degraded
     elif installed and not container_running:
         health = ModuleHealth.stopped
-    elif installed:
+    else:
         health = ModuleHealth.broken
         errors.append("MTProxy install found but runtime state unresolvable")
-    else:
-        health = ModuleHealth.not_installed
 
-    # systemd enabled check (for docker-managed mtproxy, not typical)
-    enabled = container_running  # docker containers auto-restart=unless-stopped counts as enabled
+    enabled = container_running
+    if systemctl and unit_exists:
+        enabled_result = run([systemctl, "is-enabled", "--quiet", "MTProxy"])
+        enabled = enabled_result.returncode == 0 or container_running
 
     return MTProxyState(
         installed=installed,

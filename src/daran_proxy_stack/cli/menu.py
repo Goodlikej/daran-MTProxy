@@ -346,6 +346,62 @@ def _show_action_result(result) -> None:
     console.print(Panel(body, title=result.title, border_style=border, expand=False))
 
 
+def _run_mtproxy_install(input_fn: Callable[[], str]) -> bool:
+    """Interactive install flow with fallback port selection."""
+    preview = mtproxy_actions.install(confirmed=False)
+    _show_action_result(preview)
+
+    selected_port: int | None = None
+    if preview.title == "MTProxy: конфликт порта":
+        available = mtproxy_actions._available_fallback_ports()
+        if not available:
+            return False
+
+        console.print("  [cyan]Выберите порт:[/cyan]")
+        for index, port in enumerate(available, start=1):
+            console.print(f"    [{index}] {port}")
+        console.print("  [cyan]Номер или порт:[/cyan] ", end="")
+        try:
+            answer = input_fn().strip()
+        except (EOFError, KeyboardInterrupt):
+            return False
+
+        if not answer:
+            console.print("[dim]Отменено.[/dim]")
+            return False
+
+        if answer.isdigit():
+            answer_num = int(answer)
+            if answer_num in available:
+                selected_port = answer_num
+            elif 1 <= answer_num <= len(available):
+                selected_port = available[answer_num - 1]
+
+        if selected_port is None:
+            console.print(f"[red]Неизвестный выбор: {answer!r}[/red]")
+            return False
+
+        final_preview = mtproxy_actions.install(confirmed=False, port=selected_port)
+        _show_action_result(final_preview)
+    elif preview.ok:
+        return False
+
+    confirm_suffix = f" на порту {selected_port}" if selected_port is not None else ""
+    console.print(f"  [bold yellow]Подтвердить установку MTProxy{confirm_suffix}? [y/N]:[/bold yellow] ", end="")
+    try:
+        answer = input_fn().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+    if answer not in ("y", "yes", "да", "д"):
+        console.print("[dim]Отменено.[/dim]")
+        return False
+
+    result = mtproxy_actions.install(confirmed=True, port=selected_port)
+    _show_action_result(result)
+    return result.ok
+
+
 def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
     """Подменю MTProxy с реальными действиями."""
     items = [
@@ -374,8 +430,8 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
             _show_action_result(result)
 
         elif choice == "3":
-            result = mtproxy_actions.install_guide()
-            _show_action_result(result)
+            if _run_mtproxy_install(input_fn):
+                state = cmd_rediscover()
 
         elif choice == "4":
             # Show plan first

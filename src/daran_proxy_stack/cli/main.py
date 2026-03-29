@@ -365,26 +365,27 @@ def mtproxy_official_install(
 ) -> None:
     base_cfg = load_config(config)
     selected_port = _pick_port_or_prompt(port, default=base_cfg.mtproxy.listen_port)
-    port_error = _validate_requested_port(selected_port)
-    if port_error:
-        console.print(Panel.fit(port_error, title="MTProxy port check failed", border_style="red"))
-        raise typer.Exit(code=2)
     selected_stats_port = stats_port or base_cfg.mtproxy.stats_port
-    cfg = _resolve_mtproxy_config(base_cfg, port=selected_port, stats_port=selected_stats_port)
-    paths = save_generated_files(PROJECT_ROOT, cfg.mtproxy, public_ip=cfg.mtproxy.public_host)
-    command = render_install_command_sequence(cfg.mtproxy, str(paths["systemd"]))
+    from daran_proxy_stack.cli.actions import mtproxy as mtproxy_actions
+
+    result = mtproxy_actions.install(
+        confirmed=yes,
+        port=selected_port,
+        stats_port=selected_stats_port,
+        config_path=config,
+    )
+    border = "green" if result.ok else ("yellow" if not yes else "red")
+    console.print(Panel.fit(result.body, title=result.title, border_style=border))
+    if result.tip:
+        console.print(f"[dim]{result.tip}[/dim]")
+
     if not yes:
-        console.print(Panel.fit(
-            f"Dry run.\n\nCommand to execute:\n{command}\n\nRe-run with --yes to actually install official MTProxy service.",
-            title="MTProxy official install",
-            border_style="yellow",
-        ))
+        if result.title == "MTProxy: конфликт порта":
+            raise typer.Exit(code=2)
         return
-    result = run(["bash", "-lc", command])
-    if result.ok:
-        console.print(Panel.fit("Official MTProxy install sequence completed.", title="MTProxy official install complete", border_style="green"))
-    else:
-        console.print(Panel.fit(f"stderr:\n{result.stderr or '(empty)'}", title="MTProxy official install failed", border_style="red"))
+
+    if not result.ok:
+        raise typer.Exit(code=1)
 
 
 @mtproxy_app.command("bootstrap")
