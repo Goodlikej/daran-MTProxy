@@ -598,7 +598,14 @@ class TestCascadeLogic:
 # ── API helper data structures (pure, no HTTP) ────────────────────────────────
 
 class TestApiHelpers:
-    """Tests for pure data constants and helpers in web/api.py."""
+    """Tests for pure data constants and helpers in web/api.py.
+
+    Skipped automatically when fastapi is not installed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_fastapi(self):
+        pytest.importorskip("fastapi")
 
     def test_known_actions_is_list(self):
         from daran_proxy_stack.web.api import _KNOWN_ACTIONS
