@@ -286,6 +286,10 @@ def cmd_view_modules(state: ObservedState | None) -> None:
         console.print(render_module_detail(name, mod))
 
 
+# Конкретные альтернативные порты для MTProxy (443 занят)
+_MTPROXY_ALT_PORTS = [2053, 2083, 2087, 2096]
+
+
 # ---------------------------------------------------------------------------
 # Per-module submenus
 # ---------------------------------------------------------------------------
@@ -346,6 +350,122 @@ def _show_action_result(result) -> None:
     console.print(Panel(body, title=result.title, border_style=border, expand=False))
 
 
+def _run_mtproxy_install_flow(
+    state: ObservedState | None,
+    input_fn: Callable[[], str],
+) -> ObservedState | None:
+    """Интерактивный сценарий установки MTProxy.
+
+    Сценарий:
+      1. Проверяет порт 443.
+      2. Если занят — предлагает 2053 / 2083 / 2087 / 2096 (свободные).
+      3. Пользователь выбирает порт.
+      4. Показывает план, запрашивает подтверждение.
+      5. Запускает установку.
+      6. После успеха обновляет discovery и возвращает новое состояние.
+    """
+    from daran_proxy_stack.modules import mtproxy as mtp_mod
+
+    DEFAULT_PORT = 443
+
+    console.print("\n[bold cyan]Проверяю доступность порта 443…[/bold cyan]")
+    port_status = mtp_mod.detect_port_status(DEFAULT_PORT)
+    selected_port: int | None = None
+
+    if port_status == "free":
+        selected_port = DEFAULT_PORT
+    else:
+        console.print(f"\n[yellow]Порт 443 занят ({port_status}).[/yellow]")
+        console.print("[cyan]Проверяю альтернативные порты…[/cyan]")
+
+        free_alts = [p for p in _MTPROXY_ALT_PORTS if mtp_mod.is_port_free(p)]
+
+        if not free_alts:
+            console.print(Panel(
+                "[red]Порт 443 занят, и все предложенные альтернативы (2053, 2083, 2087, 2096) тоже заняты.\n"
+                "Введите порт вручную или освободите 443.[/red]",
+                title="MTProxy: выбор порта",
+                border_style="red",
+                expand=False,
+            ))
+            port_str = _prompt("Введите порт вручную (Enter = отмена)", input_fn, "")
+            if not port_str:
+                console.print("[dim]Отменено.[/dim]")
+                return None
+            try:
+                selected_port = int(port_str)
+            except ValueError:
+                console.print("[red]Неверный порт.[/red]")
+                return None
+        else:
+            lines = ["", "Порт 443 занят. Выберите альтернативный порт:", ""]
+            for i, p in enumerate(free_alts, 1):
+                lines.append(f"  [{i}] {p}")
+            lines.append("  [c] Ввести порт вручную")
+            lines.append("  [0] Отмена")
+            lines.append("")
+            console.print(Panel(
+                "\n".join(lines),
+                title="MTProxy: выбор порта",
+                border_style="blue",
+                expand=False,
+            ))
+
+            try:
+                port_choice = input_fn()
+            except (EOFError, KeyboardInterrupt):
+                console.print("[dim]Отменено.[/dim]")
+                return None
+
+            if port_choice == "0":
+                console.print("[dim]Отменено.[/dim]")
+                return None
+            elif port_choice.lower() == "c":
+                port_str = _prompt("Введите порт", input_fn, "")
+                if not port_str:
+                    console.print("[dim]Отменено.[/dim]")
+                    return None
+                try:
+                    selected_port = int(port_str)
+                except ValueError:
+                    console.print("[red]Неверный порт.[/red]")
+                    return None
+            else:
+                try:
+                    idx = int(port_choice) - 1
+                    if 0 <= idx < len(free_alts):
+                        selected_port = free_alts[idx]
+                    else:
+                        console.print("[red]Неверный выбор.[/red]")
+                        return None
+                except ValueError:
+                    console.print("[red]Неверный выбор.[/red]")
+                    return None
+
+    if selected_port is None:
+        console.print("[dim]Отменено.[/dim]")
+        return None
+
+    # Показать план и запросить подтверждение
+    preview = mtproxy_actions.install(port=selected_port, confirmed=False)
+    _show_action_result(preview)
+
+    if not _ask_confirm(input_fn):
+        console.print("[dim]Отменено.[/dim]")
+        return None
+
+    # Запустить установку
+    console.print(f"\n[bold cyan]Устанавливаю MTProxy на порту {selected_port}…[/bold cyan]")
+    result = mtproxy_actions.install(port=selected_port, confirmed=True)
+    _show_action_result(result)
+
+    if result.ok:
+        console.print("\n[bold cyan]Обновляю статус системы…[/bold cyan]")
+        return cmd_rediscover()
+
+    return None
+
+
 def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
     """Подменю MTProxy с реальными действиями."""
     items = [
@@ -374,8 +494,9 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
             _show_action_result(result)
 
         elif choice == "3":
-            result = mtproxy_actions.install_guide()
-            _show_action_result(result)
+            new_state = _run_mtproxy_install_flow(state, input_fn)
+            if new_state is not None:
+                state = new_state
 
         elif choice == "4":
             # Show plan first
@@ -510,6 +631,59 @@ def _run_cascade_remove_rule(input_fn: Callable[[], str]) -> None:
             console.print("[dim]Отменено.[/dim]")
 
 
+def _run_cascade_relay_flow(input_fn: Callable[[], str]) -> None:
+    """Интерактивный сценарий настройки iptables relay: RU VPS → FI VPS."""
+    console.print(Panel(
+        "Прозрачный проброс трафика через iptables DNAT:\n\n"
+        "  Пользователь → этот VPS (RU) → целевой сервер (FI VPS)\n\n"
+        "  Трафик пробрасывается на сетевом уровне (L4), прозрачно.\n"
+        "  Подходит для 3x-ui (TCP), AmneziaWG (UDP), любого порта.",
+        title="Cascade: relay (iptables DNAT)",
+        border_style="blue",
+        expand=False,
+    ))
+
+    # Шаг 1: IP целевого сервера
+    target_host = _prompt("IP целевого сервера (FI VPS)", input_fn, "")
+    if not target_host:
+        console.print("[dim]Отменено.[/dim]")
+        return
+
+    # Шаг 2: Порты
+    console.print("  [dim]Примеры: 443  /  443,8443  /  443,51820[/dim]")
+    ports_str = _prompt("Порты для проброса (через запятую)", input_fn, "443")
+    if not ports_str:
+        console.print("[dim]Отменено.[/dim]")
+        return
+    try:
+        ports = [int(p.strip()) for p in ports_str.split(",") if p.strip()]
+        if not ports:
+            raise ValueError("empty")
+    except ValueError:
+        console.print("[red]Неверный формат портов.[/red]")
+        return
+
+    # Шаг 3: Протокол
+    proto = _prompt("Протокол (tcp / udp / both)", input_fn, "tcp").lower().strip()
+    if proto not in ("tcp", "udp", "both"):
+        console.print(f"[red]Неверный протокол: {proto!r}. Допустимые: tcp, udp, both.[/red]")
+        return
+
+    rules = [{"protocol": proto, "listen_port": p, "target_port": p} for p in ports]
+
+    # Предпросмотр + подтверждение
+    preview = cascade_actions.relay_setup(target_host, rules, confirmed=False)
+    _show_action_result(preview)
+
+    if not _ask_confirm(input_fn):
+        console.print("[dim]Отменено.[/dim]")
+        return
+
+    console.print(f"\n[bold cyan]Применяю relay правила → {target_host}…[/bold cyan]")
+    result = cascade_actions.relay_setup(target_host, rules, confirmed=True)
+    _show_action_result(result)
+
+
 def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
     """Подменю Cascade с реальными действиями."""
     items = [
@@ -522,6 +696,9 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
         ("7", "Управление правилами: добавить правило"),
         ("8", "Управление правилами: удалить правило"),
         ("9", "Управление правилами: сбросить все  ⚠"),
+        ("a", "Relay → FI VPS: настроить  (iptables DNAT)"),
+        ("b", "Relay → FI VPS: статус"),
+        ("c", "Relay → FI VPS: удалить правила  ⚠"),
         ("u", "Обновить данные"),
         ("0", "← Назад"),
     ]
@@ -577,6 +754,23 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
                 # There are rules to reset — ask confirm
                 if _ask_confirm(input_fn):
                     result = cascade_actions.reset_rules(confirmed=True)
+                    _show_action_result(result)
+                else:
+                    console.print("[dim]Отменено.[/dim]")
+
+        elif choice in ("a", "A"):
+            _run_cascade_relay_flow(input_fn)
+
+        elif choice in ("b", "B"):
+            result = cascade_actions.relay_status()
+            _show_action_result(result)
+
+        elif choice in ("c", "C"):
+            preview = cascade_actions.relay_flush(confirmed=False)
+            _show_action_result(preview)
+            if not preview.ok and "не найден" not in preview.body:
+                if _ask_confirm(input_fn):
+                    result = cascade_actions.relay_flush(confirmed=True)
                     _show_action_result(result)
                 else:
                     console.print("[dim]Отменено.[/dim]")

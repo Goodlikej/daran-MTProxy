@@ -517,3 +517,157 @@ def _find_artifacts_dir() -> Path:
             return path
     # Use project root heuristic (3 levels up from actions/)
     return here.parent.parent.parent.parent.parent
+
+
+# ---------------------------------------------------------------------------
+# IPTables relay actions (RU VPS → FI VPS transparent forwarding)
+# ---------------------------------------------------------------------------
+
+def relay_setup(
+    target_host: str,
+    rules: list[dict],
+    confirmed: bool = False,
+) -> ActionResult:
+    """Preview or apply iptables DNAT relay forwarding to target_host.
+
+    rules: list of {protocol: tcp|udp|both, listen_port: int, target_port: int}
+    """
+    if not target_host:
+        return ActionResult(False, "Cascade: relay", "IP целевого сервера не указан.")
+    if not rules:
+        return ActionResult(False, "Cascade: relay", "Не указаны правила проброса портов.")
+
+    cmds = cascade_mod.generate_relay_iptables_commands(target_host, rules)
+
+    if not confirmed:
+        rule_lines = [
+            f"  {r['protocol'].upper()} :{r['listen_port']} "
+            f"→ {target_host}:{r.get('target_port', r['listen_port'])}"
+            for r in rules
+        ]
+        cmd_preview = "\n".join(f"  {c}" for c in cmds)
+        return ActionResult(
+            False,
+            "Cascade: настройка relay",
+            f"Целевой сервер (FI VPS): {target_host}\n\n"
+            "Правила проброса:\n" + "\n".join(rule_lines) + "\n\n"
+            "Будут выполнены команды (sudo):\n" + cmd_preview + "\n\n"
+            "⚠ Требуется root / sudo.\n"
+            "⚠ Убедитесь, что FI VPS доступен с этого сервера.",
+            tip="Нажмите [y] для применения.",
+        )
+
+    try:
+        ok, msg = cascade_mod.apply_iptables_relay(target_host, rules)
+    except Exception as exc:
+        return ActionResult(False, "Cascade: relay ошибка", str(exc))
+
+    if not ok:
+        return ActionResult(False, "Cascade: relay ошибка", msg)
+
+    artifacts_dir = _find_artifacts_dir()
+    cascade_mod.save_relay_state(artifacts_dir, target_host, rules)
+    script_path = artifacts_dir / "cascade" / "relay-apply.sh"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(
+        cascade_mod.render_relay_script(target_host, rules),
+        encoding="utf-8",
+    )
+    script_path.chmod(0o755)
+
+    ip_fwd = cascade_mod.check_ip_forward()
+    fwd_status = "✓ включён" if ip_fwd else "⚠ проверьте (sudo sysctl -w net.ipv4.ip_forward=1)"
+    return ActionResult(
+        True,
+        "Cascade: relay настроен",
+        f"Целевой сервер: {target_host}\n"
+        f"IP forwarding: {fwd_status}\n\n"
+        + msg + "\n\n"
+        f"Скрипт для повторного применения:\n  bash {script_path}\n\n"
+        "Для сохранения правил после перезагрузки:\n"
+        "  sudo apt install iptables-persistent\n"
+        "  sudo netfilter-persistent save",
+        tip="Скрипт relay-apply.sh сохранён в artifacts/cascade/.",
+    )
+
+
+def relay_status() -> ActionResult:
+    """Show current relay state from relay-state.json + IP forwarding status."""
+    artifacts_dir = _find_artifacts_dir()
+    state = cascade_mod.load_relay_state(artifacts_dir)
+    ip_fwd = cascade_mod.check_ip_forward()
+
+    lines = [
+        f"IP forwarding: {'✓ включён' if ip_fwd else '✗ выключен'}",
+        "",
+    ]
+    if state is None:
+        lines.append("relay-state.json не найден.")
+        lines.append("Relay не был настроен через этот инструмент.")
+        return ActionResult(False, "Cascade: relay статус", "\n".join(lines))
+
+    target = state.get("target_host", "?")
+    rules = state.get("rules", [])
+    lines.append(f"Целевой сервер: {target}")
+    lines.append(f"Правил сохранено: {len(rules)}")
+    if rules:
+        lines.append("")
+        for r in rules:
+            lines.append(
+                f"  {r['protocol'].upper()} :{r['listen_port']} "
+                f"→ {target}:{r.get('target_port', r['listen_port'])}"
+            )
+    lines += [
+        "",
+        "Для проверки активных правил:",
+        "  sudo iptables -t nat -L PREROUTING -n -v",
+    ]
+    return ActionResult(True, "Cascade: relay статус", "\n".join(lines))
+
+
+def relay_flush(confirmed: bool = False) -> ActionResult:
+    """Remove iptables relay rules that were applied by relay_setup."""
+    artifacts_dir = _find_artifacts_dir()
+    state = cascade_mod.load_relay_state(artifacts_dir)
+
+    if state is None:
+        return ActionResult(
+            False,
+            "Cascade: удаление relay",
+            "relay-state.json не найден.\n"
+            "Relay не был настроен через этот инструмент.\n\n"
+            "Для ручного удаления всех PREROUTING правил:\n"
+            "  sudo iptables -t nat -F PREROUTING",
+        )
+
+    target_host = state.get("target_host", "")
+    rules = state.get("rules", [])
+    rule_lines = [
+        f"  {r['protocol'].upper()} :{r['listen_port']} "
+        f"→ {target_host}:{r.get('target_port', r['listen_port'])}"
+        for r in rules
+    ]
+
+    if not confirmed:
+        return ActionResult(
+            False,
+            "Cascade: удаление relay",
+            f"Целевой сервер: {target_host}\n\n"
+            "Будут удалены правила:\n" + "\n".join(rule_lines) + "\n\n"
+            "⚠ Требуется sudo.",
+            tip="Нажмите [y] для удаления.",
+        )
+
+    try:
+        ok, msg = cascade_mod.flush_iptables_relay(target_host, rules)
+    except Exception as exc:
+        return ActionResult(False, "Cascade: relay ошибка", str(exc))
+
+    if not ok:
+        return ActionResult(False, "Cascade: relay ошибка", msg)
+
+    return ActionResult(
+        True,
+        "Cascade: relay удалён",
+        f"Правила DNAT для {target_host} удалены из iptables.\n{msg}",
+    )

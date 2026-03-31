@@ -218,6 +218,73 @@ def install_guide() -> ActionResult:
     return ActionResult(True, "MTProxy: установка", body, tip="Запустите команды в отдельном терминале.")
 
 
+def install(port: int | None = None, confirmed: bool = False) -> ActionResult:
+    """Install MTProxy via official build + systemd.
+
+    confirmed=False → preview plan only (no system changes).
+    confirmed=True  → execute bootstrap script.
+    """
+    cfg = default_config()
+    if port is not None:
+        cfg = cfg.model_copy(update={"listen_port": port})
+
+    port_status = mtp_mod.detect_port_status(cfg.listen_port)
+    port_free = port_status == "free"
+
+    if not confirmed:
+        lines = [
+            "Официальная установка MTProxy (сборка из исходников + systemd):",
+            "",
+            f"  Порт прослушивания: {cfg.listen_port}",
+            f"  Порт статистики:    {cfg.stats_port}",
+            f"  Пользователь:       {cfg.run_user}",
+            "",
+            "Шаги:",
+            "  1. apt install git curl build-essential libssl-dev zlib1g-dev",
+            f"  2. git clone {mtp_mod.OFFICIAL_REPO} {mtp_mod.OFFICIAL_INSTALL_DIR}",
+            "  3. make  (компиляция ~2–5 мин)",
+            "  4. Загрузка proxy-secret + proxy-multi.conf",
+            "  5. Установка MTProxy.service в /etc/systemd/system/",
+            "  6. systemctl enable --now MTProxy.service",
+        ]
+        if not port_free:
+            lines.append("")
+            lines.append(f"[yellow]⚠ Порт {cfg.listen_port} занят ({port_status})[/yellow]")
+        return ActionResult(
+            True,
+            "MTProxy: план установки",
+            "\n".join(lines),
+            tip="Нажмите [y] для запуска установки.",
+        )
+
+    # === Execute installation ===
+    # Locate project root (directory containing artifacts/) or fall back to cwd
+    generated_base = Path.cwd()
+    for p in [Path(__file__).resolve(), *Path(__file__).resolve().parents]:
+        if (p / "artifacts").exists():
+            generated_base = p
+            break
+
+    # Save generated files (creates bootstrap script + secrets + service)
+    try:
+        server_ip = mtp_mod.detect_server_ip()
+        paths = mtp_mod.save_generated_files(generated_base, cfg, public_ip=server_ip)
+        bootstrap_path = paths.get("official_bootstrap")
+    except Exception as exc:
+        return ActionResult(False, "MTProxy: установка", f"Ошибка генерации файлов:\n{exc}")
+
+    if not bootstrap_path or not Path(bootstrap_path).exists():
+        return ActionResult(False, "MTProxy: установка", "Не удалось создать скрипт установки.")
+
+    # Run bootstrap script
+    r = run(["bash", str(bootstrap_path)])
+    if r.ok:
+        out = r.stdout[-3000:] if len(r.stdout) > 3000 else r.stdout
+        return ActionResult(True, "MTProxy: установка завершена", f"Установка выполнена успешно.\n\n{out}")
+    err = (r.stderr or r.stdout or "неизвестная ошибка")[-3000:]
+    return ActionResult(False, "MTProxy: ошибка установки", f"Ошибка:\n{err}")
+
+
 def uninstall(confirmed: bool = False) -> ActionResult:
     """Remove MTProxy (systemd + binary, or docker container)."""
     if not confirmed:

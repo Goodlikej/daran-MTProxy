@@ -594,11 +594,78 @@ class TestCascadeLogic:
         assert "relay_reachable" in d
         assert "upstream_reachable" in d
 
+    # ── IPTables relay pure logic ──────────────────────────────────────────
+
+    def test_check_ip_forward_returns_bool(self):
+        result = cascade.check_ip_forward()
+        assert isinstance(result, bool)
+
+    def test_generate_relay_iptables_commands_tcp(self):
+        rules = [{"protocol": "tcp", "listen_port": 443, "target_port": 443}]
+        cmds = cascade.generate_relay_iptables_commands("1.2.3.4", rules)
+        joined = " ".join(cmds)
+        assert "ip_forward" in joined
+        assert "DNAT" in joined
+        assert "1.2.3.4:443" in joined
+        assert "MASQUERADE" in joined
+
+    def test_generate_relay_iptables_commands_both_protocol(self):
+        rules = [{"protocol": "both", "listen_port": 51820, "target_port": 51820}]
+        cmds = cascade.generate_relay_iptables_commands("1.2.3.4", rules)
+        joined = " ".join(cmds)
+        assert "-p tcp" in joined
+        assert "-p udp" in joined
+
+    def test_generate_relay_iptables_commands_custom_target_port(self):
+        rules = [{"protocol": "tcp", "listen_port": 443, "target_port": 8443}]
+        cmds = cascade.generate_relay_iptables_commands("1.2.3.4", rules)
+        assert any("8443" in c for c in cmds)
+        assert not any("--dport 443" in c and "to-destination 1.2.3.4:443" in c for c in cmds)
+
+    def test_generate_relay_flush_commands(self):
+        rules = [{"protocol": "tcp", "listen_port": 443, "target_port": 443}]
+        cmds = cascade.generate_relay_flush_commands("1.2.3.4", rules)
+        assert len(cmds) >= 1
+        assert any("-D PREROUTING" in c for c in cmds)
+        assert any("1.2.3.4:443" in c for c in cmds)
+
+    def test_render_relay_script_shebang_and_content(self):
+        rules = [{"protocol": "tcp", "listen_port": 443, "target_port": 443}]
+        script = cascade.render_relay_script("1.2.3.4", rules)
+        assert script.startswith("#!/usr/bin/env bash")
+        assert "1.2.3.4" in script
+        assert "MASQUERADE" in script
+        assert "ip_forward" in script
+
+    def test_save_and_load_relay_state(self, tmp_path):
+        rules = [{"protocol": "udp", "listen_port": 51820, "target_port": 51820}]
+        cascade.save_relay_state(tmp_path, "9.9.9.9", rules)
+        state = cascade.load_relay_state(tmp_path)
+        assert state is not None
+        assert state["target_host"] == "9.9.9.9"
+        assert len(state["rules"]) == 1
+        assert state["rules"][0]["listen_port"] == 51820
+
+    def test_load_relay_state_missing(self, tmp_path):
+        assert cascade.load_relay_state(tmp_path) is None
+
+    def test_load_relay_state_malformed(self, tmp_path):
+        (tmp_path / "cascade").mkdir()
+        (tmp_path / "cascade" / "relay-state.json").write_text("not json{{{")
+        assert cascade.load_relay_state(tmp_path) is None
+
 
 # ── API helper data structures (pure, no HTTP) ────────────────────────────────
 
 class TestApiHelpers:
-    """Tests for pure data constants and helpers in web/api.py."""
+    """Tests for pure data constants and helpers in web/api.py.
+
+    Skipped automatically when fastapi is not installed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_fastapi(self):
+        pytest.importorskip("fastapi")
 
     def test_known_actions_is_list(self):
         from daran_proxy_stack.web.api import _KNOWN_ACTIONS
