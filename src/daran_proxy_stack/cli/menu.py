@@ -43,6 +43,7 @@ from daran_proxy_stack.cli.actions import warp as warp_actions
 from daran_proxy_stack.cli.actions import mtproxy as mtproxy_actions
 from daran_proxy_stack.cli.actions import cascade as cascade_actions
 from daran_proxy_stack.cli.actions import xui as xui_actions
+from daran_proxy_stack.cli.actions import monitor as monitor_actions
 
 console = Console()
 
@@ -248,8 +249,10 @@ def render_full_discovery(state: ObservedState) -> None:
 # Status summary for main menu (inline badge per module)
 # ---------------------------------------------------------------------------
 
-def _module_status_badge(name: str, state: ObservedState | None) -> Text:
+def _module_status_badge(name: str | None, state: ObservedState | None) -> Text:
     """Краткий badge для строки главного меню."""
+    if name is None:
+        return Text("", style="dim")
     if state is None:
         return Text("○ нет данных", style="dim")
 
@@ -476,6 +479,8 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
         ("5", "Перезапустить"),
         ("6", "Показать tg-ссылку"),
         ("7", "Обновить данные"),
+        ("8", "Обновить ключи  (proxy-secret + proxy-multi.conf)"),
+        ("9", "Авто-обновление ключей  (systemd timer, раз в месяц)"),
         ("0", "← Назад"),
     ]
     while True:
@@ -536,6 +541,25 @@ def _run_mtproxy_submenu(state: ObservedState | None, input_fn: Callable[[], str
 
         elif choice == "7":
             state = cmd_rediscover()
+
+        elif choice == "8":
+            preview = mtproxy_actions.key_refresh(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                console.print("\n[bold cyan]Обновляю ключи…[/bold cyan]")
+                result = mtproxy_actions.key_refresh(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "9":
+            preview = mtproxy_actions.setup_key_rotation(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = mtproxy_actions.setup_key_rotation(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
 
         elif choice == "0":
             break
@@ -890,6 +914,94 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
             console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
 
 
+def _run_monitoring_setup_flow(input_fn: Callable[[], str]) -> None:
+    """Interactive flow: collect bot token + chat_id, configure monitoring."""
+    console.print(Panel(
+        "Telegram-уведомления через вашего бота.\n\n"
+        "Как получить данные:\n"
+        "  1. Создайте бота → @BotFather → /newbot\n"
+        "  2. Скопируйте токен (вида 123456:AAF...)\n"
+        "  3. Напишите боту любое сообщение\n"
+        "  4. Узнайте chat_id → @userinfobot или /getUpdates",
+        title="Мониторинг: настройка",
+        border_style="blue",
+        expand=False,
+    ))
+
+    bot_token = _prompt("Bot token", input_fn, "")
+    if not bot_token:
+        console.print("[dim]Отменено.[/dim]")
+        return
+
+    chat_id = _prompt("Chat ID", input_fn, "")
+    if not chat_id:
+        console.print("[dim]Отменено.[/dim]")
+        return
+
+    services_str = _prompt("Контролируемые сервисы (через запятую)", input_fn, "MTProxy")
+    services = [s.strip() for s in services_str.split(",") if s.strip()]
+
+    preview = monitor_actions.setup_monitoring(bot_token, chat_id, services, confirmed=False)
+    _show_action_result(preview)
+
+    if not _ask_confirm(input_fn):
+        console.print("[dim]Отменено.[/dim]")
+        return
+
+    console.print("\n[bold cyan]Настраиваю мониторинг…[/bold cyan]")
+    result = monitor_actions.setup_monitoring(bot_token, chat_id, services, confirmed=True)
+    _show_action_result(result)
+
+    if result.ok:
+        console.print("\n[cyan]Отправляю тестовое уведомление…[/cyan]")
+        test_result = monitor_actions.test_notification(bot_token, chat_id)
+        _show_action_result(test_result)
+
+
+def _run_monitoring_submenu(input_fn: Callable[[], str]) -> None:
+    """Подменю Мониторинг: Telegram-уведомления + watchdog."""
+    items = [
+        ("1", "Статус  (конфиг + таймер)"),
+        ("2", "Настроить мониторинг  (bot token + chat_id)"),
+        ("3", "Отправить тестовое уведомление"),
+        ("0", "← Назад"),
+    ]
+    while True:
+        _print_submenu("Мониторинг", items)
+        try:
+            choice = input_fn()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if choice == "1":
+            result = monitor_actions.monitoring_status()
+            _show_action_result(result)
+
+        elif choice == "2":
+            _run_monitoring_setup_flow(input_fn)
+
+        elif choice == "3":
+            from daran_proxy_stack.lib.notify import load_notify_config
+            cfg = load_notify_config(monitor_actions._config_dir())
+            if not cfg:
+                console.print(Panel(
+                    "[yellow]Конфигурация не найдена.\nСначала выполните «Настроить мониторинг» (пункт 2).[/yellow]",
+                    title="Мониторинг",
+                    border_style="yellow",
+                    expand=False,
+                ))
+            else:
+                result = monitor_actions.test_notification(
+                    cfg["bot_token"], cfg["chat_id"]
+                )
+                _show_action_result(result)
+
+        elif choice == "0":
+            break
+        else:
+            console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
+
+
 def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
     """Подменю 3x-ui.
 
@@ -948,6 +1060,7 @@ def _print_main_menu(state: ObservedState | None) -> None:
         ("2", "Cascade", "cascade"),
         ("3", "WARP", "warp"),
         ("4", "3x-ui", "xui"),
+        ("5", "Мониторинг", None),
     ]
 
     for key, label, attr in modules_info:
@@ -1021,6 +1134,8 @@ def run_menu(
             _run_warp_submenu(last_state, _input)
         elif choice == "4":
             _run_3xui_submenu(last_state, _input)
+        elif choice == "5":
+            _run_monitoring_submenu(_input)
         elif choice in ("r", "R", "р", "Р"):  # латиница + кириллица
             last_state = cmd_rediscover()
         elif choice == "0":

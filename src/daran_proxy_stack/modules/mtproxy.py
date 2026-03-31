@@ -347,6 +347,58 @@ def render_bootstrap_script(config: MTProxyConfig, secret: str | None = None, in
     )
 
 
+KEY_REFRESH_SERVICE_NAME = "mtproxy-key-refresh"
+
+
+def refresh_official_keys(install_dir: str = OFFICIAL_INSTALL_DIR) -> tuple[bool, str]:
+    """Download fresh proxy-secret and proxy-multi.conf from Telegram servers."""
+    lines = []
+    ok = True
+    for url, filename in [
+        (PROXY_SECRET_URL, "proxy-secret"),
+        (PROXY_CONFIG_URL, "proxy-multi.conf"),
+    ]:
+        dest = Path(install_dir) / filename
+        r = run(["curl", "-fsSL", url, "-o", str(dest)])
+        if r.ok:
+            lines.append(f"✓ {filename} обновлён")
+        else:
+            lines.append(f"✗ {filename}: {r.stderr or 'ошибка загрузки'}")
+            ok = False
+    return ok, "\n".join(lines)
+
+
+def render_key_refresh_service(install_dir: str = OFFICIAL_INSTALL_DIR) -> str:
+    """Render systemd oneshot service for key refresh."""
+    return (
+        "[Unit]\n"
+        "Description=MTProxy key refresh (proxy-secret + proxy-multi.conf)\n"
+        "After=network-online.target\n"
+        "Wants=network-online.target\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart=/bin/bash -c 'curl -fsSL {PROXY_SECRET_URL} -o {install_dir}/proxy-secret"
+        f" && curl -fsSL {PROXY_CONFIG_URL} -o {install_dir}/proxy-multi.conf"
+        " && systemctl restart MTProxy'\n"
+    )
+
+
+def render_key_refresh_timer() -> str:
+    """Render systemd monthly timer for key refresh."""
+    return (
+        "[Unit]\n"
+        "Description=MTProxy key refresh — monthly timer\n"
+        "\n"
+        "[Timer]\n"
+        "OnCalendar=monthly\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+
+
 def save_generated_files(base_dir: Path, config: MTProxyConfig, public_ip: str | None = None) -> dict[str, Path]:
     generated_dir = ensure_dir(base_dir / "artifacts" / "generated" / "mtproxy")
     data_dir = ensure_dir(generated_dir / "data")
