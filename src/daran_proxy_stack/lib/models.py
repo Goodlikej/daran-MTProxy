@@ -119,6 +119,25 @@ class CascadeConfig(BaseModel):
     enabled: bool = False
 
 
+class AmneziaWGConfig(BaseModel):
+    interface: str = "wg0"
+    listen_port: int = Field(default=51820, ge=1, le=65535)
+    server_address: str = "10.8.0.1/24"
+    client_subnet: str = "10.8.0"   # first 3 octets; clients get .2, .3, …
+    dns: str = "8.8.8.8"
+    # AmneziaWG obfuscation parameters
+    jc: int = Field(default=4, ge=1, le=128)     # junk packet count
+    jmin: int = Field(default=40, ge=1)           # junk packet min size
+    jmax: int = Field(default=70, ge=1)           # junk packet max size
+    s1: int = Field(default=0, ge=0)
+    s2: int = Field(default=0, ge=0)
+    h1: int = Field(default=1, ge=1)
+    h2: int = Field(default=2, ge=1)
+    h3: int = Field(default=3, ge=1)
+    h4: int = Field(default=4, ge=1)
+    persistent_keepalive: int = Field(default=25, ge=0)
+
+
 class AppConfig(BaseModel):
     paths: AppPaths = Field(default_factory=AppPaths)
     warp: WarpConfig = Field(default_factory=WarpConfig)

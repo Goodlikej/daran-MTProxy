@@ -45,6 +45,7 @@ from daran_proxy_stack.cli.actions import cascade as cascade_actions
 from daran_proxy_stack.cli.actions import xui as xui_actions
 from daran_proxy_stack.cli.actions import monitor as monitor_actions
 from daran_proxy_stack.cli.actions import backup as backup_actions
+from daran_proxy_stack.cli.actions import amneziawg as awg_actions
 
 console = Console()
 
@@ -1003,6 +1004,144 @@ def _run_monitoring_submenu(input_fn: Callable[[], str]) -> None:
             console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
 
 
+def _run_awg_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
+    """Подменю AmneziaWG — обфусцированный WireGuard."""
+    items = [
+        ("1", "Статус"),
+        ("2", "Установить  (apt PPA, Ubuntu)"),
+        ("3", "Сгенерировать серверный конфиг  (ключи + wg0.conf)"),
+        ("4", "Применить конфиг  → /etc/amneziawg/"),
+        ("5", "Запустить сервис  (awg-quick@wg0)"),
+        ("6", "Остановить сервис"),
+        ("7", "Перезапустить сервис"),
+        ("8", "Список пиров"),
+        ("9", "Добавить пира"),
+        ("d", "Удалить пира"),
+        ("c", "Показать клиентский конфиг"),
+        ("u", "Обновить данные"),
+        ("0", "← Назад"),
+    ]
+    while True:
+        _print_submenu("AmneziaWG", items)
+        try:
+            choice = input_fn()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if choice == "1":
+            result = awg_actions.status()
+            _show_action_result(result)
+
+        elif choice == "2":
+            preview = awg_actions.install(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                console.print("\n[bold cyan]Устанавливаю AmneziaWG…[/bold cyan]")
+                result = awg_actions.install(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "3":
+            port_str = _prompt("Порт (UDP)", input_fn, "51820")
+            addr_str = _prompt("Адрес сервера (CIDR)", input_fn, "10.8.0.1/24")
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = 51820
+            preview = awg_actions.generate_server_config(port=port, address=addr_str, confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = awg_actions.generate_server_config(port=port, address=addr_str, confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "4":
+            preview = awg_actions.apply_config(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = awg_actions.apply_config(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "5":
+            preview = awg_actions.service_start(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = awg_actions.service_start(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "6":
+            preview = awg_actions.service_stop(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = awg_actions.service_stop(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "7":
+            preview = awg_actions.service_restart(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = awg_actions.service_restart(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "8":
+            result = awg_actions.list_peers()
+            _show_action_result(result)
+
+        elif choice == "9":
+            peer_name = _prompt("Имя пира (клиента)", input_fn, "")
+            if not peer_name:
+                console.print("[dim]Отменено.[/dim]")
+            else:
+                preview = awg_actions.add_peer(peer_name, confirmed=False)
+                _show_action_result(preview)
+                if _ask_confirm(input_fn):
+                    result = awg_actions.add_peer(peer_name, confirmed=True)
+                    _show_action_result(result)
+                else:
+                    console.print("[dim]Отменено.[/dim]")
+
+        elif choice in ("d", "D"):
+            list_result = awg_actions.list_peers()
+            _show_action_result(list_result)
+            peer_name = _prompt("Имя пира для удаления", input_fn, "")
+            if not peer_name:
+                console.print("[dim]Отменено.[/dim]")
+            else:
+                preview = awg_actions.remove_peer(peer_name, confirmed=False)
+                _show_action_result(preview)
+                if preview.ok and _ask_confirm(input_fn):
+                    result = awg_actions.remove_peer(peer_name, confirmed=True)
+                    _show_action_result(result)
+                else:
+                    console.print("[dim]Отменено.[/dim]")
+
+        elif choice in ("c", "C"):
+            list_result = awg_actions.list_peers()
+            _show_action_result(list_result)
+            peer_name = _prompt("Имя пира", input_fn, "")
+            if peer_name:
+                result = awg_actions.show_client_config(peer_name)
+                _show_action_result(result)
+
+        elif choice in ("u", "U"):
+            state = cmd_rediscover()
+
+        elif choice == "0":
+            break
+        else:
+            console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
+
+
 def _run_backup_submenu(input_fn: Callable[[], str]) -> None:
     """Подменю резервного копирования."""
     items = [
@@ -1170,8 +1309,9 @@ def _print_main_menu(state: ObservedState | None) -> None:
         ("2", "Cascade", "cascade"),
         ("3", "WARP", "warp"),
         ("4", "3x-ui", "xui"),
-        ("5", "Мониторинг", None),
-        ("6", "Резервные копии", None),
+        ("5", "AmneziaWG", None),
+        ("6", "Мониторинг", None),
+        ("7", "Резервные копии", None),
     ]
 
     for key, label, attr in modules_info:
@@ -1247,8 +1387,10 @@ def run_menu(
         elif choice == "4":
             _run_3xui_submenu(last_state, _input)
         elif choice == "5":
-            _run_monitoring_submenu(_input)
+            _run_awg_submenu(last_state, _input)
         elif choice == "6":
+            _run_monitoring_submenu(_input)
+        elif choice == "7":
             _run_backup_submenu(_input)
         elif choice in ("w", "W", "в", "В"):
             _run_wizard(_input)

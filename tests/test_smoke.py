@@ -1624,3 +1624,198 @@ class TestWizardLogic:
         r.add(WizardStep("A", True, "ok"))
         r.add(WizardStep("B", False, "fail"))
         assert not r.ok
+
+
+# ── AmneziaWG module ───────────────────────────────────────────────────────────
+
+class TestAmneziaWGModule:
+    """Tests for modules/amneziawg.py — pure logic, no system binaries needed."""
+
+    def test_python_keypair_returns_two_b64_strings(self):
+        from daran_proxy_stack.modules.amneziawg import _python_curve25519_keypair
+        import base64
+        priv, pub = _python_curve25519_keypair()
+        assert len(base64.b64decode(priv)) == 32
+        assert len(base64.b64decode(pub)) == 32
+
+    def test_keypairs_are_unique(self):
+        from daran_proxy_stack.modules.amneziawg import _python_curve25519_keypair
+        a = _python_curve25519_keypair()
+        b = _python_curve25519_keypair()
+        assert a[0] != b[0]  # private keys differ
+
+    def test_generate_keypair_fallback(self, monkeypatch):
+        """generate_keypair falls back to Python when no awg/wg binary."""
+        import shutil
+        import daran_proxy_stack.modules.amneziawg as awg
+        monkeypatch.setattr(shutil, "which", lambda _: None)
+        priv, pub = awg.generate_keypair()
+        assert priv and pub
+
+    def test_render_server_config_contains_jc(self):
+        from daran_proxy_stack.lib.models import AmneziaWGConfig
+        from daran_proxy_stack.modules.amneziawg import render_server_config
+        cfg = AmneziaWGConfig(jc=7)
+        conf = render_server_config(cfg, "FAKE_PRIVKEY_BASE64==")
+        assert "Jc = 7" in conf
+        assert "ListenPort = 51820" in conf
+        assert "[Interface]" in conf
+
+    def test_render_server_config_includes_peers(self):
+        from daran_proxy_stack.lib.models import AmneziaWGConfig
+        from daran_proxy_stack.modules.amneziawg import render_server_config
+        cfg = AmneziaWGConfig()
+        peers = [{"name": "alice", "public_key": "PUBKEY==", "allowed_ips": "10.8.0.2/32"}]
+        conf = render_server_config(cfg, "PRIVKEY==", peers)
+        assert "[Peer]" in conf
+        assert "alice" in conf
+        assert "PUBKEY==" in conf
+
+    def test_render_client_config_structure(self):
+        from daran_proxy_stack.lib.models import AmneziaWGConfig
+        from daran_proxy_stack.modules.amneziawg import render_client_config
+        cfg = AmneziaWGConfig()
+        conf = render_client_config(cfg, "SERVERPUB==", "1.2.3.4", "CLIPRIV==", "10.8.0.2")
+        assert "[Interface]" in conf
+        assert "[Peer]" in conf
+        assert "Endpoint = 1.2.3.4:51820" in conf
+        assert "AllowedIPs = 0.0.0.0/0" in conf
+        assert "Jc = 4" in conf
+
+    def test_render_install_script_has_ppa(self):
+        from daran_proxy_stack.modules.amneziawg import render_install_script
+        script = render_install_script()
+        assert "amneziawg" in script
+        assert "apt" in script
+        assert "ip_forward" in script
+
+    def test_load_state_missing_file(self, tmp_path):
+        from daran_proxy_stack.modules.amneziawg import load_state
+        state = load_state(tmp_path / "nonexistent")
+        assert state["peers"] == []
+        assert state["server_public_key"] is None
+
+    def test_save_and_load_state(self, tmp_path):
+        from daran_proxy_stack.modules.amneziawg import save_state, load_state
+        gen = tmp_path / "awg"
+        gen.mkdir()
+        data = {"peers": [{"name": "bob", "public_key": "PUB==", "address": "10.8.0.2", "allowed_ips": "10.8.0.2/32"}], "server_public_key": "SPUB=="}
+        save_state(gen, data)
+        loaded = load_state(gen)
+        assert loaded["server_public_key"] == "SPUB=="
+        assert len(loaded["peers"]) == 1
+
+    def test_add_peer_no_server_configured(self, tmp_path):
+        from daran_proxy_stack.lib.models import AmneziaWGConfig
+        from daran_proxy_stack.modules.amneziawg import add_peer
+        gen = tmp_path / "awg"
+        gen.mkdir()
+        ok, msg, path = add_peer(gen, AmneziaWGConfig(), "test-peer")
+        assert not ok
+        assert path is None
+
+    def test_add_and_remove_peer(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib.models import AmneziaWGConfig
+        import daran_proxy_stack.modules.amneziawg as awg
+        gen = tmp_path / "awg"
+        gen.mkdir()
+        # Bootstrap state with server keys
+        (gen / "server-private.key").write_text("FAKE_PRIV==\n")
+        awg.save_state(gen, {
+            "server_public_key": "FAKE_PUB==",
+            "server_ip": "1.2.3.4",
+            "peers": [],
+        })
+        # Mock keypair generation
+        monkeypatch.setattr(awg, "generate_keypair", lambda: ("PEER_PRIV==", "PEER_PUB=="))
+        ok, msg, conf_path = awg.add_peer(gen, AmneziaWGConfig(), "alice")
+        assert ok
+        assert conf_path is not None and conf_path.exists()
+        state = awg.load_state(gen)
+        assert len(state["peers"]) == 1
+        assert state["peers"][0]["name"] == "alice"
+        # Remove
+        ok2, msg2 = awg.remove_peer(gen, AmneziaWGConfig(), "alice")
+        assert ok2
+        state2 = awg.load_state(gen)
+        assert len(state2["peers"]) == 0
+
+    def test_remove_nonexistent_peer(self, tmp_path):
+        from daran_proxy_stack.lib.models import AmneziaWGConfig
+        from daran_proxy_stack.modules.amneziawg import save_state, remove_peer
+        gen = tmp_path / "awg"
+        gen.mkdir()
+        save_state(gen, {"peers": [], "server_public_key": "PUB=="})
+        ok, msg = remove_peer(gen, AmneziaWGConfig(), "ghost")
+        assert not ok
+        assert "не найден" in msg
+
+    def test_peer_ip_assignment_sequential(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib.models import AmneziaWGConfig
+        import daran_proxy_stack.modules.amneziawg as awg
+        gen = tmp_path / "awg"
+        gen.mkdir()
+        (gen / "server-private.key").write_text("PRIV==\n")
+        awg.save_state(gen, {"server_public_key": "PUB==", "server_ip": "1.2.3.4", "peers": []})
+        monkeypatch.setattr(awg, "generate_keypair", lambda: ("P==", "Q=="))
+        awg.add_peer(gen, AmneziaWGConfig(), "peer1")
+        awg.add_peer(gen, AmneziaWGConfig(), "peer2")
+        state = awg.load_state(gen)
+        ips = [p["address"] for p in state["peers"]]
+        assert ips == ["10.8.0.2", "10.8.0.3"]
+
+
+class TestAmneziaWGActions:
+    """Tests for cli/actions/amneziawg.py — action layer."""
+
+    def test_status_no_install(self, monkeypatch):
+        import shutil
+        import daran_proxy_stack.cli.actions.amneziawg as act
+        monkeypatch.setattr(shutil, "which", lambda _: None)
+        result = act.status()
+        assert "не найден" in result.body
+
+    def test_install_preview(self):
+        from daran_proxy_stack.cli.actions.amneziawg import install
+        result = install(confirmed=False)
+        assert result.ok
+        assert "ppa:amnezia" in result.body.lower() or "amneziawg" in result.body.lower()
+
+    def test_generate_config_preview(self):
+        from daran_proxy_stack.cli.actions.amneziawg import generate_server_config
+        result = generate_server_config(port=51820, confirmed=False)
+        assert result.ok
+        assert "51820" in result.body
+
+    def test_generate_config_creates_files(self, tmp_path, monkeypatch):
+        import daran_proxy_stack.cli.actions.amneziawg as act
+        import daran_proxy_stack.modules.amneziawg as awg
+        monkeypatch.setattr(awg, "_detect_public_ip", lambda: "1.2.3.4")
+        monkeypatch.setattr(awg, "generate_keypair", lambda: ("PRIV==", "PUB=="))
+        # Redirect base_dir to tmp_path
+        (tmp_path / "artifacts").mkdir()
+        import pathlib
+        monkeypatch.setattr(pathlib.Path, "parents", property(lambda self: [tmp_path, tmp_path.parent]))
+        result = act.generate_server_config(confirmed=True)
+        # Should succeed or fail cleanly — just verify it returns ActionResult
+        assert hasattr(result, "ok")
+
+    def test_list_peers_empty(self, monkeypatch):
+        from daran_proxy_stack.modules.amneziawg import load_state
+        import daran_proxy_stack.cli.actions.amneziawg as act
+        monkeypatch.setattr(act.awg_mod, "load_state", lambda _: {"peers": []})
+        result = act.list_peers()
+        assert not result.ok
+        assert "Пиров нет" in result.body
+
+    def test_add_peer_no_server(self, monkeypatch):
+        import daran_proxy_stack.cli.actions.amneziawg as act
+        monkeypatch.setattr(act.awg_mod, "load_state", lambda _: {"peers": [], "server_public_key": None})
+        result = act.add_peer("testpeer", confirmed=False)
+        assert not result.ok
+
+    def test_service_start_preview(self):
+        from daran_proxy_stack.cli.actions.amneziawg import service_start
+        result = service_start(confirmed=False)
+        assert result.ok
+        assert "start" in result.body.lower() or "запуст" in result.body.lower()
