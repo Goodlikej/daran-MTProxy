@@ -98,9 +98,10 @@ def connect(confirmed: bool = False) -> ActionResult:
             False,
             "WARP: подключение",
             "Выполнит:\n"
-            "  warp-cli registration new  (если ещё не зарегистрирован)\n"
+            "  warp-cli registration new   (если ещё не зарегистрирован)\n"
+            "  warp-cli set-mode proxy     ← не меняет таблицу маршрутизации\n"
             "  warp-cli connect",
-            tip="Нажмите [y] для подтверждения.",
+            tip="Режим proxy: SSH-сессия не прерывается. WARP доступен через SOCKS5 127.0.0.1:40000.",
         )
     cfg = default_config()
     result = warp_mod.connect_warp(cfg)

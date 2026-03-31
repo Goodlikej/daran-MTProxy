@@ -226,6 +226,7 @@ def connect_warp(config: WarpConfig) -> WarpActionResult:
 
     commands = [
         f"{warp_cli_path} --accept-tos registration new || true",
+        f"{warp_cli_path} --accept-tos set-mode proxy",
         f"{warp_cli_path} --accept-tos connect",
         f"{warp_cli_path} --accept-tos status",
     ]
