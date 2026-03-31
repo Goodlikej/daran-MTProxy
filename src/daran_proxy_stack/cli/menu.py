@@ -44,6 +44,7 @@ from daran_proxy_stack.cli.actions import mtproxy as mtproxy_actions
 from daran_proxy_stack.cli.actions import cascade as cascade_actions
 from daran_proxy_stack.cli.actions import xui as xui_actions
 from daran_proxy_stack.cli.actions import monitor as monitor_actions
+from daran_proxy_stack.cli.actions import backup as backup_actions
 
 console = Console()
 
@@ -1002,6 +1003,115 @@ def _run_monitoring_submenu(input_fn: Callable[[], str]) -> None:
             console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
 
 
+def _run_backup_submenu(input_fn: Callable[[], str]) -> None:
+    """Подменю резервного копирования."""
+    items = [
+        ("1", "Список резервных копий"),
+        ("2", "Создать резервную копию"),
+        ("3", "Просмотреть содержимое архива"),
+        ("4", "Восстановить из архива"),
+        ("0", "← Назад"),
+    ]
+    while True:
+        _print_submenu("Резервное копирование", items)
+        try:
+            choice = input_fn()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if choice == "1":
+            result = backup_actions.list_backups()
+            _show_action_result(result)
+
+        elif choice == "2":
+            preview = backup_actions.create_backup(confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                console.print("\n[cyan]Создаю архив…[/cyan]")
+                result = backup_actions.create_backup(confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "3":
+            from daran_proxy_stack.lib.backup import list_available_backups
+            archives = list_available_backups()
+            if not archives:
+                console.print("[yellow]Резервных копий не найдено.[/yellow]")
+            else:
+                list_result = backup_actions.list_backups()
+                _show_action_result(list_result)
+                idx_str = _prompt("Номер архива для просмотра", input_fn, "1")
+                try:
+                    idx = int(idx_str) - 1
+                    if 0 <= idx < len(archives):
+                        result = backup_actions.inspect_backup(archives[idx])
+                        _show_action_result(result)
+                    else:
+                        console.print("[red]Неверный номер.[/red]")
+                except ValueError:
+                    console.print("[red]Введите число.[/red]")
+
+        elif choice == "4":
+            from daran_proxy_stack.lib.backup import list_available_backups
+            archives = list_available_backups()
+            if not archives:
+                console.print("[yellow]Резервных копий не найдено. Сначала создайте архив.[/yellow]")
+            else:
+                list_result = backup_actions.list_backups()
+                _show_action_result(list_result)
+                idx_str = _prompt("Номер архива для восстановления", input_fn, "1")
+                try:
+                    idx = int(idx_str) - 1
+                    if 0 <= idx < len(archives):
+                        archive = archives[idx]
+                        preview = backup_actions.restore_backup(archive, confirmed=False)
+                        _show_action_result(preview)
+                        if _ask_confirm(input_fn):
+                            result = backup_actions.restore_backup(archive, confirmed=True)
+                            _show_action_result(result)
+                        else:
+                            console.print("[dim]Отменено.[/dim]")
+                    else:
+                        console.print("[red]Неверный номер.[/red]")
+                except ValueError:
+                    console.print("[red]Введите число.[/red]")
+
+        elif choice == "0":
+            break
+        else:
+            console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
+
+
+def _run_wizard(input_fn: Callable[[], str]) -> None:
+    """Запустить мастер первого запуска."""
+    from daran_proxy_stack.cli.actions.wizard import run_wizard
+    from rich.panel import Panel
+
+    result = run_wizard(
+        input_fn=input_fn,
+        console=console,
+        ask_confirm_fn=_ask_confirm,
+        prompt_fn=_prompt,
+        show_result_fn=_show_action_result,
+    )
+
+    if result.cancelled:
+        console.print("[dim]Мастер отменён.[/dim]")
+        return
+
+    # Final summary
+    summary_lines = result.summary_lines()
+    status = "[bold green]Настройка завершена успешно[/bold green]" if result.ok \
+        else "[bold yellow]Настройка завершена с предупреждениями[/bold yellow]"
+    console.print(Panel(
+        status + "\n\n" + "\n".join(summary_lines),
+        title="[bold]Мастер первого запуска — итог[/bold]",
+        border_style="green" if result.ok else "yellow",
+        expand=False,
+    ))
+
+
 def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
     """Подменю 3x-ui.
 
@@ -1061,6 +1171,7 @@ def _print_main_menu(state: ObservedState | None) -> None:
         ("3", "WARP", "warp"),
         ("4", "3x-ui", "xui"),
         ("5", "Мониторинг", None),
+        ("6", "Резервные копии", None),
     ]
 
     for key, label, attr in modules_info:
@@ -1081,6 +1192,7 @@ def _print_main_menu(state: ObservedState | None) -> None:
         lines.append(f"  [dim]Discovery: [{status_style}]{status}[/{status_style}]  {ts}[/dim]")
 
     lines.append("")
+    lines.append("  [w] Мастер первого запуска")
     lines.append("  [r] Обновить статус")
     lines.append("  [0] Выход")
     lines.append("")
@@ -1136,6 +1248,10 @@ def run_menu(
             _run_3xui_submenu(last_state, _input)
         elif choice == "5":
             _run_monitoring_submenu(_input)
+        elif choice == "6":
+            _run_backup_submenu(_input)
+        elif choice in ("w", "W", "в", "В"):
+            _run_wizard(_input)
         elif choice in ("r", "R", "р", "Р"):  # латиница + кириллица
             last_state = cmd_rediscover()
         elif choice == "0":

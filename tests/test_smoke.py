@@ -1464,3 +1464,163 @@ class TestInventoryEndpoint:
     def test_mtproxy_info_has_port_source(self, api_client):
         data = api_client.get("/api/v1/mtproxy").json()
         assert "port_source" in data
+
+
+# ── Backup lib ─────────────────────────────────────────────────────────────────
+
+class TestBackupLib:
+    """Tests for lib/backup.py — pure logic, no system calls needed."""
+
+    def test_list_backups_empty_dir(self, tmp_path):
+        from daran_proxy_stack.lib.backup import list_available_backups
+        result = list_available_backups(tmp_path)
+        assert result == []
+
+    def test_list_backups_finds_archives(self, tmp_path):
+        from daran_proxy_stack.lib.backup import list_available_backups
+        (tmp_path / "daran-proxy-backup-20260101-120000.tar.gz").touch()
+        (tmp_path / "daran-proxy-backup-20260201-120000.tar.gz").touch()
+        result = list_available_backups(tmp_path)
+        assert len(result) == 2
+
+    def test_list_backups_ignores_other_files(self, tmp_path):
+        from daran_proxy_stack.lib.backup import list_available_backups
+        (tmp_path / "some-other-file.tar.gz").touch()
+        (tmp_path / "daran-proxy-backup-20260101-120000.tar.gz").touch()
+        result = list_available_backups(tmp_path)
+        assert len(result) == 1
+
+    def test_create_backup_no_artifacts(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib import backup as bk
+        monkeypatch.setattr(bk, "_find_generated_dir", lambda: None)
+        ok, msg, path = bk.create_backup(output_dir=tmp_path)
+        assert not ok
+        assert path is None
+
+    def test_create_backup_empty_generated(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib import backup as bk
+        gen = tmp_path / "generated"
+        gen.mkdir()
+        monkeypatch.setattr(bk, "_find_generated_dir", lambda: gen)
+        ok, msg, path = bk.create_backup(output_dir=tmp_path / "backups")
+        assert not ok  # no files to backup
+
+    def test_create_and_inspect_backup(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib import backup as bk
+        gen = tmp_path / "generated"
+        (gen / "mtproxy").mkdir(parents=True)
+        (gen / "mtproxy" / "secret.txt").write_text("abc123")
+        (gen / "mtproxy" / "tg-link.txt").write_text("tg://proxy?...")
+        monkeypatch.setattr(bk, "_find_generated_dir", lambda: gen)
+        out = tmp_path / "backups"
+        ok, msg, archive = bk.create_backup(output_dir=out)
+        assert ok
+        assert archive is not None
+        assert archive.exists()
+        # Inspect
+        ok2, contents = bk.list_backup_contents(archive)
+        assert ok2
+        assert "secret.txt" in contents
+
+    def test_restore_dry_run(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib import backup as bk
+        gen = tmp_path / "generated"
+        (gen / "mtproxy").mkdir(parents=True)
+        (gen / "mtproxy" / "secret.txt").write_text("abc123")
+        monkeypatch.setattr(bk, "_find_generated_dir", lambda: gen)
+        out = tmp_path / "backups"
+        ok, _, archive = bk.create_backup(output_dir=out)
+        assert ok
+        ok2, msg = bk.restore_backup(archive, confirmed=False)
+        assert ok2
+        assert "secret.txt" in msg
+
+    def test_restore_confirmed(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib import backup as bk
+        gen = tmp_path / "generated"
+        (gen / "mtproxy").mkdir(parents=True)
+        secret_file = gen / "mtproxy" / "secret.txt"
+        secret_file.write_text("original")
+        monkeypatch.setattr(bk, "_find_generated_dir", lambda: gen)
+        out = tmp_path / "backups"
+        ok, _, archive = bk.create_backup(output_dir=out)
+        assert ok
+        # Overwrite original
+        secret_file.write_text("changed")
+        # Restore
+        ok2, msg = bk.restore_backup(archive, confirmed=True)
+        assert ok2
+        assert secret_file.read_text() == "original"
+
+    def test_inspect_nonexistent_archive(self, tmp_path):
+        from daran_proxy_stack.lib.backup import list_backup_contents
+        ok, msg = list_backup_contents(tmp_path / "no-such-file.tar.gz")
+        assert not ok
+
+    def test_backup_manifest_present(self, tmp_path, monkeypatch):
+        from daran_proxy_stack.lib import backup as bk
+        import tarfile
+        gen = tmp_path / "generated"
+        (gen / "mtproxy").mkdir(parents=True)
+        (gen / "mtproxy" / "secret.txt").write_text("x")
+        monkeypatch.setattr(bk, "_find_generated_dir", lambda: gen)
+        ok, _, archive = bk.create_backup(output_dir=tmp_path / "backups")
+        assert ok
+        with tarfile.open(archive, "r:gz") as tar:
+            names = tar.getnames()
+        assert bk._MANIFEST_NAME in names
+
+
+# ── Wizard logic ───────────────────────────────────────────────────────────────
+
+class TestWizardLogic:
+    """Tests for actions/wizard.py — cancel path and result structure."""
+
+    def test_cancel_on_zero(self):
+        from daran_proxy_stack.cli.actions.wizard import run_wizard, WizardResult
+        from rich.console import Console
+        calls = iter(["0"])
+        result = run_wizard(
+            input_fn=lambda: next(calls),
+            console=Console(quiet=True),
+            ask_confirm_fn=lambda _: False,
+            prompt_fn=lambda label, fn, default: default,
+            show_result_fn=lambda _: None,
+        )
+        assert result.cancelled
+
+    def test_cancel_on_keyboard_interrupt(self):
+        from daran_proxy_stack.cli.actions.wizard import run_wizard
+        from rich.console import Console
+        def raise_eof():
+            raise EOFError
+        result = run_wizard(
+            input_fn=raise_eof,
+            console=Console(quiet=True),
+            ask_confirm_fn=lambda _: False,
+            prompt_fn=lambda label, fn, default: default,
+            show_result_fn=lambda _: None,
+        )
+        assert result.cancelled
+
+    def test_wizard_result_summary(self):
+        from daran_proxy_stack.cli.actions.wizard import WizardResult, WizardStep
+        r = WizardResult()
+        r.add(WizardStep("MTProxy", True, "порт 443"))
+        r.add(WizardStep("Relay", False, "пропущено"))
+        lines = r.summary_lines()
+        assert any("✓" in l and "MTProxy" in l for l in lines)
+        assert any("⚠" in l and "Relay" in l for l in lines)
+
+    def test_wizard_result_ok_all_true(self):
+        from daran_proxy_stack.cli.actions.wizard import WizardResult, WizardStep
+        r = WizardResult()
+        r.add(WizardStep("A", True, "ok"))
+        assert r.ok
+
+    def test_wizard_result_not_ok_if_any_false(self):
+        from daran_proxy_stack.cli.actions.wizard import WizardResult, WizardStep
+        r = WizardResult()
+        r.add(WizardStep("A", True, "ok"))
+        r.add(WizardStep("B", False, "fail"))
+        assert not r.ok
