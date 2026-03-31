@@ -577,17 +577,35 @@ def relay_setup(
 
     ip_fwd = cascade_mod.check_ip_forward()
     fwd_status = "✓ включён" if ip_fwd else "⚠ проверьте (sudo sysctl -w net.ipv4.ip_forward=1)"
+
+    # Post-relay: open ports in ufw + persist iptables automatically
+    from daran_proxy_stack.lib import firewall
+    ufw_lines: list[str] = []
+    for rule in rules:
+        ufw_ok, ufw_msg = firewall.apply_ufw_rule(rule["listen_port"], rule["protocol"])
+        ufw_lines.append(f"  {'✓' if ufw_ok else '⚠'} {ufw_msg}")
+
+    persist_ok, persist_msg = firewall.persist_iptables()
+
+    checklist = [
+        "",
+        "─── Пост-установочная проверка ───",
+        f"  {'✓' if ip_fwd else '⚠'} IP Forwarding: {fwd_status}",
+        "  Firewall (ufw):",
+        *ufw_lines,
+        f"  {'✓' if persist_ok else '⚠'} Сохранение правил: {persist_msg}",
+        "",
+        f"  Скрипт для восстановления после перезагрузки:",
+        f"    bash {script_path}",
+    ]
+
     return ActionResult(
         True,
         "Cascade: relay настроен",
         f"Целевой сервер: {target_host}\n"
-        f"IP forwarding: {fwd_status}\n\n"
-        + msg + "\n\n"
-        f"Скрипт для повторного применения:\n  bash {script_path}\n\n"
-        "Для сохранения правил после перезагрузки:\n"
-        "  sudo apt install iptables-persistent\n"
-        "  sudo netfilter-persistent save",
-        tip="Скрипт relay-apply.sh сохранён в artifacts/cascade/.",
+        + msg
+        + "\n".join(checklist),
+        tip="Правила применены и сохранены.",
     )
 
 

@@ -655,6 +655,156 @@ class TestCascadeLogic:
         assert cascade.load_relay_state(tmp_path) is None
 
 
+# ── Firewall utilities (lib/firewall.py) ─────────────────────────────────────
+
+class TestFirewallLib:
+    """Pure-logic tests for lib/firewall.py — all system calls mocked."""
+
+    from daran_proxy_stack.lib import firewall
+    from daran_proxy_stack.lib.shell import CommandResult
+
+    def _ok(self, stdout: str = "") -> "CommandResult":
+        return CommandResult(command="...", returncode=0, stdout=stdout, stderr="")
+
+    def _fail(self, stderr: str = "error") -> "CommandResult":
+        return CommandResult(command="...", returncode=1, stdout="", stderr=stderr)
+
+    def test_check_ufw_active_true(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("shutil.which", return_value="/usr/sbin/ufw"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok("Status: active")):
+            assert firewall.check_ufw_active() is True
+
+    def test_check_ufw_active_false_inactive(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("shutil.which", return_value="/usr/sbin/ufw"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok("Status: inactive")):
+            assert firewall.check_ufw_active() is False
+
+    def test_check_ufw_active_no_ufw(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value=None):
+            assert firewall.check_ufw_active() is False
+
+    def test_apply_ufw_rule_no_ufw(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value=None):
+            ok, msg = firewall.apply_ufw_rule(443, "tcp")
+        assert ok is True
+        assert "не установлен" in msg
+
+    def test_apply_ufw_rule_inactive(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value="/usr/sbin/ufw"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.check_ufw_active",
+                                 return_value=False):
+            ok, msg = firewall.apply_ufw_rule(443, "tcp")
+        assert ok is True
+        assert "не активен" in msg
+
+    def test_apply_ufw_rule_success_tcp(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value="/usr/sbin/ufw"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.check_ufw_active",
+                                 return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok("Rule added")):
+            ok, msg = firewall.apply_ufw_rule(443, "tcp")
+        assert ok is True
+        assert "443/tcp" in msg
+
+    def test_apply_ufw_rule_both_protocols(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value="/usr/sbin/ufw"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.check_ufw_active",
+                                 return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok("Rule added")):
+            ok, msg = firewall.apply_ufw_rule(51820, "both")
+        assert ok is True
+        assert "tcp" in msg and "udp" in msg
+
+    def test_apply_ufw_rule_failure(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value="/usr/sbin/ufw"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.check_ufw_active",
+                                 return_value=True), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._fail("permission denied")):
+            ok, msg = firewall.apply_ufw_rule(443, "tcp")
+        assert ok is False
+        assert "ошибка" in msg.lower()
+
+    def test_check_port_listening_true(self):
+        from daran_proxy_stack.lib import firewall
+        ss_out = "Netid  State   Recv-Q Send-Q  Local\ntcp    LISTEN  0      128     *:443"
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value="/usr/bin/ss"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok(ss_out)):
+            assert firewall.check_port_listening(443) is True
+
+    def test_check_port_listening_false(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value="/usr/bin/ss"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok("Netid  State")):
+            assert firewall.check_port_listening(443) is False
+
+    def test_get_public_ip_success(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok("1.2.3.4")):
+            ip = firewall.get_public_ip()
+        assert ip == "1.2.3.4"
+
+    def test_get_public_ip_failure(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._fail()):
+            ip = firewall.get_public_ip()
+        assert ip is None
+
+    def test_persist_iptables_netfilter_persistent(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value="/usr/sbin/netfilter-persistent"), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok("Saving rules")):
+            ok, msg = firewall.persist_iptables()
+        assert ok is True
+        assert "сохранены" in msg
+
+    def test_persist_iptables_iptables_save_fallback(self):
+        from daran_proxy_stack.lib import firewall
+        def _which(name):
+            return "/sbin/iptables-save" if name == "iptables-save" else None
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 side_effect=_which), \
+             unittest.mock.patch("daran_proxy_stack.lib.firewall.run",
+                                 return_value=self._ok()):
+            ok, msg = firewall.persist_iptables()
+        assert ok is True
+        assert "rules.v4" in msg
+
+    def test_persist_iptables_not_available(self):
+        from daran_proxy_stack.lib import firewall
+        with unittest.mock.patch("daran_proxy_stack.lib.firewall.shutil.which",
+                                 return_value=None):
+            ok, msg = firewall.persist_iptables()
+        assert ok is False
+        assert "iptables-persistent" in msg
+
+
 # ── API helper data structures (pure, no HTTP) ────────────────────────────────
 
 class TestApiHelpers:

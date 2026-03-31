@@ -279,8 +279,29 @@ def install(port: int | None = None, confirmed: bool = False) -> ActionResult:
     # Run bootstrap script
     r = run(["bash", str(bootstrap_path)])
     if r.ok:
-        out = r.stdout[-3000:] if len(r.stdout) > 3000 else r.stdout
-        return ActionResult(True, "MTProxy: установка завершена", f"Установка выполнена успешно.\n\n{out}")
+        out = r.stdout[-2000:] if len(r.stdout) > 2000 else r.stdout
+
+        # Post-install: open firewall + verify port + get public IP
+        from daran_proxy_stack.lib import firewall
+        ufw_ok, ufw_msg = firewall.apply_ufw_rule(cfg.listen_port, "tcp")
+        port_up = firewall.check_port_listening(cfg.listen_port)
+        public_ip = firewall.get_public_ip() or "не определён"
+
+        checklist = [
+            "",
+            "─── Пост-установочная проверка ───",
+            f"  {'✓' if port_up else '⚠'} Сервис слушает порт {cfg.listen_port}:"
+            f" {'да' if port_up else 'нет — проверьте: systemctl status MTProxy'}",
+            f"  {'✓' if ufw_ok else '⚠'} Firewall: {ufw_msg}",
+            f"  🌐 Публичный IP сервера: {public_ip}",
+            "",
+            "  Следующий шаг: выберите [6] в меню MTProxy → получить tg-ссылку",
+        ]
+        return ActionResult(
+            True,
+            "MTProxy: установка завершена",
+            f"Установка выполнена успешно.\n\n{out}" + "\n".join(checklist),
+        )
     err = (r.stderr or r.stdout or "неизвестная ошибка")[-3000:]
     return ActionResult(False, "MTProxy: ошибка установки", f"Ошибка:\n{err}")
 
