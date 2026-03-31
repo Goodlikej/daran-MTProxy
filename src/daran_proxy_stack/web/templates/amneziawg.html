@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %} · AmneziaWG{% endblock %}
+
+{% block content %}
+<h1>AmneziaWG</h1>
+<p class="subtitle">Обфусцированный WireGuard — управление туннелем и пирами</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>Статус</h2>
+    <div class="val" id="awg-status">…</div>
+    <p id="awg-iface">загрузка…</p>
+  </div>
+  <div class="card">
+    <h2>Пиры</h2>
+    <div class="val" id="awg-peers">…</div>
+    <p>настроенных клиентов</p>
+  </div>
+  <div class="card">
+    <h2>Сервис</h2>
+    <div class="val" id="awg-svc">…</div>
+    <p id="awg-port">порт: —</p>
+  </div>
+</div>
+
+<div class="section">
+  <h2>Диагностика</h2>
+  <table class="kv" id="awg-diag">
+    <tr><td>awg</td><td id="awg-bin">…</td></tr>
+    <tr><td>awg-quick</td><td id="awg-quick-bin">…</td></tr>
+    <tr><td>Установлен</td><td id="awg-installed">…</td></tr>
+    <tr><td>Интерфейс</td><td id="awg-if">…</td></tr>
+    <tr><td>Конфиг</td><td id="awg-cfg">…</td></tr>
+    <tr><td>Server IP</td><td id="awg-ip">…</td></tr>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Пиры (клиенты)
+    <span class="badge muted" id="awg-peer-count" style="font-size:11px"></span>
+  </h2>
+  <table class="tbl">
+    <thead><tr><th>#</th><th>Имя</th><th>IP адрес</th><th>Публичный ключ</th></tr></thead>
+    <tbody id="awg-peer-tbody">
+      <tr><td colspan="4" style="color:var(--muted)">загрузка…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="section">
+  <h2>Управление</h2>
+  <p style="color:var(--muted);font-size:12px;margin-bottom:12px">
+    Для управления сервисом и пирами используйте <strong>TUI меню</strong>:
+    <code style="color:var(--accent)">daran-net menu</code> → AmneziaWG
+  </p>
+  <table class="kv">
+    <tr><td>Установить</td><td><code>daran-net menu → [5] → [2]</code></td></tr>
+    <tr><td>Генерация конфига</td><td><code>daran-net menu → [5] → [3]</code></td></tr>
+    <tr><td>Добавить пира</td><td><code>daran-net menu → [5] → [9]</code></td></tr>
+    <tr><td>Запустить сервис</td><td><code>daran-net menu → [5] → [5]</code></td></tr>
+    <tr><td>Клиентский конфиг</td><td><code>daran-net menu → [5] → [c]</code></td></tr>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadAWGStatus() {
+  try {
+    const r = await fetch('/api/v1/amneziawg');
+    if (!r.ok) { throw new Error(r.status); }
+    const d = await r.json();
+
+    const installed = d.is_installed;
+    const svcStatus = d.service_status || 'unknown';
+    const ifUp = d.interface_up;
+
+    const statusEl = $('awg-status');
+    if (!installed) {
+      statusEl.textContent = 'не установлен';
+      statusEl.className = 'val warn';
+    } else if (ifUp) {
+      statusEl.textContent = 'работает';
+      statusEl.className = 'val ok';
+    } else {
+      statusEl.textContent = 'остановлен';
+      statusEl.className = 'val warn';
+    }
+    $('awg-iface').textContent = 'интерфейс: ' + (d.interface || 'wg0');
+
+    const svcEl = $('awg-svc');
+    svcEl.textContent = svcStatus;
+    svcEl.className = 'val ' + (svcStatus === 'active' ? 'ok' : 'warn');
+    $('awg-port').textContent = 'порт: ' + (d.listen_port || '—');
+
+    $('awg-peers').textContent = d.peers_count || 0;
+
+    // diag table
+    $('awg-bin').innerHTML = d.awg_path ? `<span class="badge ok">${d.awg_path}</span>` : '<span class="badge err">не найден</span>';
+    $('awg-quick-bin').innerHTML = d.awg_quick_path ? `<span class="badge ok">${d.awg_quick_path}</span>` : '<span class="badge err">не найден</span>';
+    $('awg-installed').innerHTML = installed ? '<span class="badge ok">да</span>' : '<span class="badge warn">нет</span>';
+    $('awg-if').innerHTML = ifUp ? '<span class="badge ok">UP</span>' : '<span class="badge muted">DOWN</span>';
+    $('awg-cfg').innerHTML = d.config_exists ? '<span class="badge ok">есть</span>' : '<span class="badge muted">нет</span>';
+    $('awg-ip').textContent = d.server_ip || '—';
+
+    // peers
+    const peers = d.peers || [];
+    $('awg-peer-count').textContent = peers.length + ' пиров';
+    if (peers.length === 0) {
+      $('awg-peer-tbody').innerHTML = '<tr><td colspan="4" style="color:var(--muted)">Пиров нет. Добавьте через TUI меню.</td></tr>';
+    } else {
+      $('awg-peer-tbody').innerHTML = peers.map((p, i) =>
+        `<tr><td>${i+1}</td><td>${p.name}</td><td><span class="badge info">${p.address}</span></td><td style="font-size:11px;color:var(--muted)">${(p.public_key||'').substring(0,24)}…</td></tr>`
+      ).join('');
+    }
+  } catch(e) {
+    $('awg-status').textContent = 'ошибка';
+    $('awg-status').className = 'val err';
+    $('awg-iface').textContent = e.message;
+  }
+}
+
+loadAWGStatus();
+setInterval(loadAWGStatus, 10000);
+</script>
+{% endblock %}
