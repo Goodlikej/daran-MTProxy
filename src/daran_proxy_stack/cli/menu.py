@@ -338,11 +338,13 @@ def _wip_action(action_name: str) -> None:
 
 
 def _ask_confirm(input_fn: Callable[[], str]) -> bool:
-    """Ask user for y/n confirmation. Returns True if confirmed."""
-    console.print("  [bold yellow]Подтвердить? [y/N]:[/bold yellow] ", end="")
+    """Ask user for confirmation. Returns True if confirmed."""
+    console.print(
+        "  [bold yellow]Подтвердить?[/bold yellow]  [green][1] Да[/green]  [dim][0] Нет[/dim]"
+    )
     try:
         answer = input_fn().strip().lower()
-        return answer in ("y", "yes", "да", "д")
+        return answer in ("1", "y", "yes", "да", "д")
     except (EOFError, KeyboardInterrupt):
         return False
 
