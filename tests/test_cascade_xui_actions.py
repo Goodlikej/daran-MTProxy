@@ -410,18 +410,18 @@ class TestXuiActionsInstallXuiProUpstream:
         assert "wget" in result.body.lower()
 
     def test_confirmed_runs_upstream_script_success(self):
-        """confirmed=True with wget present should call run() and return ok on success."""
+        """confirmed=True with wget present should call run_live() and return ok on success."""
         from daran_proxy_stack.lib.shell import CommandResult
         with self._patch_detect():
             with unittest.mock.patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"):
                 with unittest.mock.patch(
-                    "daran_proxy_stack.cli.actions.xui.run",
-                    return_value=CommandResult("sudo su ...", 0, "Installation complete", ""),
+                    "daran_proxy_stack.cli.actions.xui.run_live",
+                    return_value=CommandResult("sudo bash ...", 0, "Installation complete", ""),
                 ) as mock_run:
                     result = xui_actions.install_xui_pro_upstream(confirmed=True)
         assert result.ok
         assert "завершён" in result.body or "complete" in result.body
-        # The run call must reference the upstream script URL
+        # The run_live call must reference the upstream script URL
         call_args = mock_run.call_args[0][0]
         assert any("mozaroc" in str(a) or "x-ui-pro" in str(a) for a in call_args)
 
@@ -431,8 +431,8 @@ class TestXuiActionsInstallXuiProUpstream:
         with self._patch_detect():
             with unittest.mock.patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"):
                 with unittest.mock.patch(
-                    "daran_proxy_stack.cli.actions.xui.run",
-                    return_value=CommandResult("sudo su ...", 1, "", "connection refused"),
+                    "daran_proxy_stack.cli.actions.xui.run_live",
+                    return_value=CommandResult("sudo bash ...", 1, "", "connection refused"),
                 ):
                     result = xui_actions.install_xui_pro_upstream(confirmed=True)
         assert not result.ok
