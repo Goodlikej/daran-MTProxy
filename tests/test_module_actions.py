@@ -509,3 +509,140 @@ class TestMenuMTProxySubMenuActions:
     def test_mtproxy_uninstall_cancel(self):
         """Choice '4' → uninstall → cancel."""
         self._run(["1", "4", "n", "0", "0"])
+
+
+# ---------------------------------------------------------------------------
+# Cascade relay actions
+# ---------------------------------------------------------------------------
+
+class TestCascadeRelayActions:
+    """Unit tests for cascade relay (iptables DNAT) actions."""
+
+    _RULES = [{"protocol": "tcp", "listen_port": 443, "target_port": 443}]
+
+    def test_relay_setup_no_host(self):
+        from daran_proxy_stack.cli.actions.cascade import relay_setup
+        result = relay_setup("", self._RULES, confirmed=False)
+        assert not result.ok
+
+    def test_relay_setup_no_rules(self):
+        from daran_proxy_stack.cli.actions.cascade import relay_setup
+        result = relay_setup("1.2.3.4", [], confirmed=False)
+        assert not result.ok
+
+    def test_relay_setup_unconfirmed(self):
+        from daran_proxy_stack.cli.actions.cascade import relay_setup
+        result = relay_setup("1.2.3.4", self._RULES, confirmed=False)
+        assert not result.ok
+        assert "1.2.3.4" in result.body
+        assert "443" in result.body
+        assert "DNAT" in result.body or "iptables" in result.body
+
+    def test_relay_setup_confirmed_success(self, tmp_path):
+        from daran_proxy_stack.cli.actions.cascade import relay_setup
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.modules.cascade.apply_iptables_relay",
+                return_value=(True, "Применено команд: 4."),
+            ):
+                with unittest.mock.patch(
+                    "daran_proxy_stack.modules.cascade.check_ip_forward",
+                    return_value=True,
+                ):
+                    result = relay_setup("1.2.3.4", self._RULES, confirmed=True)
+        assert result.ok
+        assert "1.2.3.4" in result.body
+        assert (tmp_path / "cascade" / "relay-state.json").exists()
+
+    def test_relay_setup_confirmed_failure(self, tmp_path):
+        from daran_proxy_stack.cli.actions.cascade import relay_setup
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.modules.cascade.apply_iptables_relay",
+                return_value=(False, "Permission denied"),
+            ):
+                result = relay_setup("1.2.3.4", self._RULES, confirmed=True)
+        assert not result.ok
+        assert "Permission denied" in result.body or "ошибка" in result.title.lower()
+
+    def test_relay_status_no_state(self, tmp_path):
+        from daran_proxy_stack.cli.actions.cascade import relay_status
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = relay_status()
+        assert not result.ok
+        assert "не найден" in result.body
+
+    def test_relay_status_with_state(self, tmp_path):
+        import json
+        from daran_proxy_stack.cli.actions.cascade import relay_status
+        state_dir = tmp_path / "cascade"
+        state_dir.mkdir()
+        (state_dir / "relay-state.json").write_text(
+            json.dumps({"target_host": "5.6.7.8", "rules": self._RULES})
+        )
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.modules.cascade.check_ip_forward",
+                return_value=True,
+            ):
+                result = relay_status()
+        assert result.ok
+        assert "5.6.7.8" in result.body
+
+    def test_relay_flush_no_state(self, tmp_path):
+        from daran_proxy_stack.cli.actions.cascade import relay_flush
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = relay_flush(confirmed=False)
+        assert not result.ok
+        assert "не найден" in result.body
+
+    def test_relay_flush_unconfirmed(self, tmp_path):
+        import json
+        from daran_proxy_stack.cli.actions.cascade import relay_flush
+        state_dir = tmp_path / "cascade"
+        state_dir.mkdir()
+        (state_dir / "relay-state.json").write_text(
+            json.dumps({"target_host": "5.6.7.8", "rules": self._RULES})
+        )
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            result = relay_flush(confirmed=False)
+        assert not result.ok
+        assert "5.6.7.8" in result.body
+
+    def test_relay_flush_confirmed_success(self, tmp_path):
+        import json
+        from daran_proxy_stack.cli.actions.cascade import relay_flush
+        state_dir = tmp_path / "cascade"
+        state_dir.mkdir()
+        (state_dir / "relay-state.json").write_text(
+            json.dumps({"target_host": "5.6.7.8", "rules": self._RULES})
+        )
+        with unittest.mock.patch(
+            "daran_proxy_stack.cli.actions.cascade._find_artifacts_dir",
+            return_value=tmp_path,
+        ):
+            with unittest.mock.patch(
+                "daran_proxy_stack.modules.cascade.flush_iptables_relay",
+                return_value=(True, "Удалено правил: 1."),
+            ):
+                result = relay_flush(confirmed=True)
+        assert result.ok
+        assert "5.6.7.8" in result.body
