@@ -130,6 +130,10 @@ pre.code{background:var(--bg3);border:1px solid var(--border);border-radius:4px;
       <span class="ico">⟝</span> Cascade
       <span class="status-dot" id="dot-cascade"></span>
     </a>
+    <a href="/amneziawg" class="{{ 'active' if active=='amneziawg' else '' }}">
+      <span class="ico">⬡</span> AmneziaWG
+      <span class="status-dot" id="dot-awg"></span>
+    </a>
     <a href="/jobs" class="{{ 'active' if active=='jobs' else '' }}">
       <span class="ico">⚙</span> Jobs
     </a>
@@ -137,7 +141,10 @@ pre.code{background:var(--bg3);border:1px solid var(--border);border-radius:4px;
       <span class="ico">▤</span> Inventory
     </a>
   </nav>
-  <footer>v0.1.0 · panel</footer>
+  <footer>
+    {% if user %}<a href="/logout" style="color:var(--muted);font-size:11px">⏻ выйти</a><br>{% endif %}
+    v0.1.0 · panel
+  </footer>
 </div>
 
 <div id="main">

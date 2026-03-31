@@ -8,9 +8,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from daran_proxy_stack.lib.config import load_config
 from daran_proxy_stack.lib.executor import executor
+from daran_proxy_stack.lib.multiserver import ServerEntry, ServerRegistry, _default_config_dir, make_server_id
 from daran_proxy_stack.lib.shell import run
 from daran_proxy_stack.modules import cascade as cascade_mod
 from daran_proxy_stack.modules import discovery as discovery_mod
@@ -489,3 +491,118 @@ async def trigger_action(module: str, action: str) -> JSONResponse:
     loop = asyncio.get_event_loop()
     task = await loop.run_in_executor(None, lambda: executor.submit(task_name, fn))
     return JSONResponse(task.model_dump(mode="json"), status_code=202)
+
+
+# ── multiserver ───────────────────────────────────────────────────────────────────
+
+def _ms_registry() -> ServerRegistry:
+    return ServerRegistry(_default_config_dir())
+
+
+class _AddServerRequest(BaseModel):
+    label: str
+    host: str
+    port: int = 22
+    user: str = "root"
+    description: str = ""
+    tags: list[str] = []
+
+
+@router.get("/multiserver/servers")
+async def multiserver_list() -> JSONResponse:
+    reg = _ms_registry()
+    return JSONResponse({"servers": [s.to_dict() for s in reg.list_servers()]})
+
+
+@router.post("/multiserver/servers")
+async def multiserver_add(req: _AddServerRequest) -> JSONResponse:
+    if not req.label or not req.host:
+        raise HTTPException(status_code=400, detail="label and host required")
+    reg = _ms_registry()
+    entry = ServerEntry(
+        id=make_server_id(req.label),
+        label=req.label,
+        host=req.host,
+        port=req.port,
+        user=req.user,
+        description=req.description,
+        tags=req.tags,
+    )
+    reg.add_server(entry)
+    return JSONResponse({"ok": True, "id": entry.id})
+
+
+@router.delete("/multiserver/servers/{server_id}")
+async def multiserver_remove(server_id: str) -> JSONResponse:
+    reg = _ms_registry()
+    ok = reg.remove_server(server_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"server {server_id!r} not found")
+    return JSONResponse({"ok": True})
+
+
+@router.get("/multiserver/ping")
+async def multiserver_ping() -> JSONResponse:
+    """TCP-ping all registered servers (parallel)."""
+    reg = _ms_registry()
+    loop = asyncio.get_event_loop()
+    results = await loop.run_in_executor(None, reg.ping_all)
+    # Merge with full server info for the UI
+    server_map = {s.id: s for s in reg.list_servers()}
+    enriched = []
+    for r in results:
+        s = server_map.get(r["id"])
+        enriched.append({
+            **r,
+            "user": s.user if s else "?",
+            "description": s.description if s else "",
+            "tags": s.tags if s else [],
+        })
+    return JSONResponse({"servers": enriched})
+
+
+@router.get("/multiserver/servers/{server_id}/status")
+async def multiserver_server_status(server_id: str) -> JSONResponse:
+    """Collect diagnostics from a remote server via SSH."""
+    reg = _ms_registry()
+    entry = reg.get_server(server_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail=f"server {server_id!r} not found")
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, lambda: reg.collect_remote_status(entry))
+    return JSONResponse({"label": entry.label, **info})
+
+
+# ── amneziawg ─────────────────────────────────────────────────────────────────────
+
+@router.get("/amneziawg")
+async def amneziawg_status() -> JSONResponse:
+    """Return AmneziaWG diagnostics + peer list."""
+    def _collect() -> dict:
+        try:
+            from daran_proxy_stack.lib.models import AmneziaWGConfig
+            from daran_proxy_stack.modules.amneziawg import (
+                _default_generated_dir, collect_diagnostics, load_state,
+            )
+            cfg = AmneziaWGConfig()
+            gen = _default_generated_dir()
+            d = collect_diagnostics(cfg, gen)
+            state = load_state(gen)
+            return {
+                "awg_path": d.awg_path,
+                "awg_quick_path": d.awg_quick_path,
+                "is_installed": d.is_installed,
+                "service_status": d.service_status,
+                "interface_up": d.interface_up,
+                "interface": cfg.interface,
+                "listen_port": cfg.listen_port,
+                "server_ip": d.server_ip,
+                "config_exists": d.config_exists,
+                "peers_count": d.peers_count,
+                "peers": state.get("peers", []),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+    loop = asyncio.get_event_loop()
+    info = await loop.run_in_executor(None, _collect)
+    return JSONResponse(info)

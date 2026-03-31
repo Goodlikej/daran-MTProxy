@@ -3,14 +3,15 @@
 
 {% block content %}
 <h1>Servers</h1>
-<p class="subtitle">Host system information</p>
+<p class="subtitle">Локальный хост и зарегистрированные удалённые серверы</p>
 
+<!-- ── Local host ── -->
 <div class="section">
-  <h2>Host</h2>
+  <h2>Локальный хост</h2>
   <table class="kv" id="srv-kv">
     <tr><td>Hostname</td><td id="s-hostname">…</td></tr>
-    <tr><td>IP address</td><td id="s-ip">…</td></tr>
-    <tr><td>OS</td><td id="s-os">…</td></tr>
+    <tr><td>IP адрес</td><td id="s-ip">…</td></tr>
+    <tr><td>ОС</td><td id="s-os">…</td></tr>
     <tr><td>Uptime</td><td id="s-uptime">…</td></tr>
     <tr><td>Load (1/5/15m)</td><td id="s-load">…</td></tr>
   </table>
@@ -18,79 +19,178 @@
 
 <div class="grid">
   <div class="card">
-    <h2>Memory</h2>
+    <h2>Память</h2>
     <div class="val" id="s-mem-used">…</div>
-    <p id="s-mem-sub">of total</p>
+    <p id="s-mem-sub">от общего</p>
     <div class="bar-wrap"><div class="bar-fill" id="s-mem-bar" style="width:0%"></div></div>
   </div>
   <div class="card">
-    <h2>Disk (/)</h2>
+    <h2>Диск (/)</h2>
     <div class="val" id="s-disk-used">…</div>
-    <p id="s-disk-sub">used</p>
+    <p id="s-disk-sub">использовано</p>
     <div class="bar-wrap"><div class="bar-fill" id="s-disk-bar" style="width:0%"></div></div>
   </div>
 </div>
 
+<!-- ── Remote servers ── -->
 <div class="section">
-  <h2>Installed Stack
-    <span class="badge muted" id="srv-inv-count" style="font-size:11px"></span>
-    <a href="/inventory" style="margin-left:auto;font-size:11px">full view →</a>
+  <h2>Удалённые серверы
+    <button class="btn btn-sm" onclick="addServerModal()" style="margin-left:auto">+ Добавить</button>
+    <button class="btn btn-sm" onclick="loadRemoteServers()" style="margin-left:8px">↻ Обновить</button>
   </h2>
-  <table class="tbl">
-    <thead><tr><th>Component</th><th>Detected</th><th>Status</th><th>Version</th><th>Endpoint</th></tr></thead>
-    <tbody id="srv-inv-tbody">
-      <tr><td colspan="5" style="color:var(--muted)">loading…</td></tr>
+  <table class="tbl" id="remote-tbl">
+    <thead><tr><th>Имя</th><th>Хост</th><th>Пользователь</th><th>Статус</th><th>Задержка</th><th>Теги</th><th></th></tr></thead>
+    <tbody id="remote-tbody">
+      <tr><td colspan="7" style="color:var(--muted)">загрузка…</td></tr>
     </tbody>
   </table>
 </div>
 
-<div class="section">
-  <h2>Raw JSON</h2>
-  <pre class="code" id="s-raw">loading…</pre>
+<!-- ── Remote server detail panel ── -->
+<div class="section" id="remote-detail" style="display:none">
+  <h2 id="detail-title">Детали сервера</h2>
+  <pre class="code" id="detail-body">…</pre>
+</div>
+
+<!-- ── Add server modal ── -->
+<div id="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center">
+<div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:28px;width:380px">
+  <h2 style="margin-bottom:20px;font-size:14px">Добавить сервер</h2>
+  <table class="kv" style="margin-bottom:16px">
+    <tr><td>Имя</td><td><input id="add-label" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 8px;color:var(--text);font-family:var(--font)" placeholder="Finland VPS"></td></tr>
+    <tr><td>IP / хост</td><td><input id="add-host" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 8px;color:var(--text);font-family:var(--font)" placeholder="1.2.3.4"></td></tr>
+    <tr><td>SSH порт</td><td><input id="add-port" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 8px;color:var(--text);font-family:var(--font)" value="22"></td></tr>
+    <tr><td>Пользователь</td><td><input id="add-user" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 8px;color:var(--text);font-family:var(--font)" value="root"></td></tr>
+    <tr><td>Описание</td><td><input id="add-desc" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 8px;color:var(--text);font-family:var(--font)"></td></tr>
+    <tr><td>Теги</td><td><input id="add-tags" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:3px;padding:5px 8px;color:var(--text);font-family:var(--font)" placeholder="exit, relay (через запятую)"></td></tr>
+  </table>
+  <div id="add-error" style="color:var(--red);font-size:12px;margin-bottom:8px;display:none"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn btn-sm" onclick="closeModal()">Отмена</button>
+    <button class="btn btn-sm" onclick="submitAddServer()" style="background:var(--accent);color:#0d1117;border:none;font-weight:700">Добавить</button>
+  </div>
+</div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+// ── local host ──
 window.onStatusUpdate = function(d) {
   const srv = d.server || {};
-
   $('s-hostname').textContent = srv.hostname || '—';
-  $('s-ip').innerHTML = srv.ip
-    ? `<span class="badge ok">${srv.ip}</span>`
-    : '<span class="badge err">unknown</span>';
+  $('s-ip').innerHTML = srv.ip ? `<span class="badge ok">${srv.ip}</span>` : '<span class="badge err">unknown</span>';
   $('s-os').textContent = srv.os || '—';
-
   const upSec = srv.uptime_s;
   if (upSec != null) {
-    const days = Math.floor(upSec / 86400);
-    const h = Math.floor((upSec % 86400) / 3600);
-    const m = Math.floor((upSec % 3600) / 60);
+    const days = Math.floor(upSec / 86400), h = Math.floor((upSec % 86400) / 3600), m = Math.floor((upSec % 3600) / 60);
     $('s-uptime').textContent = (days ? days + 'd ' : '') + h + 'h ' + m + 'm';
   }
-
   $('s-load').textContent = (srv.load_avg || []).join(' / ') || '—';
-
   const mem = srv.mem || {};
   if (mem.total_mb) {
     $('s-mem-used').textContent = mem.used_mb + ' MB';
-    $('s-mem-sub').textContent = 'of ' + mem.total_mb + ' MB (' + mem.used_pct + '% used)';
+    $('s-mem-sub').textContent = 'из ' + mem.total_mb + ' MB (' + mem.used_pct + '%)';
     const bar = $('s-mem-bar');
     bar.style.width = mem.used_pct + '%';
     bar.className = 'bar-fill' + (mem.used_pct > 85 ? ' err' : mem.used_pct > 65 ? ' warn' : '');
   }
-
   const disk = srv.disk || {};
   if (disk.used) {
     const pct = parseInt(disk.used_pct || '0');
     $('s-disk-used').textContent = disk.used;
-    $('s-disk-sub').textContent = disk.avail + ' available (' + disk.used_pct + ')';
+    $('s-disk-sub').textContent = disk.avail + ' свободно (' + disk.used_pct + ')';
     const bar = $('s-disk-bar');
     bar.style.width = pct + '%';
     bar.className = 'bar-fill' + (pct > 85 ? ' err' : pct > 65 ? ' warn' : '');
   }
-
-  $('s-raw').textContent = JSON.stringify(srv, null, 2);
 };
+
+// ── remote servers ──
+async function loadRemoteServers() {
+  try {
+    const r = await fetch('/api/v1/multiserver/ping');
+    const data = await r.json();
+    renderRemoteServers(data);
+  } catch(e) {
+    $('remote-tbody').innerHTML = `<tr><td colspan="7" style="color:var(--red)">Ошибка: ${e.message}</td></tr>`;
+  }
+}
+
+function renderRemoteServers(data) {
+  if (!data.servers || data.servers.length === 0) {
+    $('remote-tbody').innerHTML = '<tr><td colspan="7" style="color:var(--muted)">Серверов не добавлено. Нажмите «+ Добавить».</td></tr>';
+    return;
+  }
+  $('remote-tbody').innerHTML = data.servers.map(s => {
+    const lat = s.latency_ms != null ? s.latency_ms + ' мс' : '—';
+    const statusBadge = s.reachable
+      ? `<span class="badge ok">online</span>`
+      : `<span class="badge err">offline</span>`;
+    const tags = (s.tags || []).map(t => `<span class="badge info">${t}</span>`).join(' ');
+    return `<tr>
+      <td><strong>${s.label}</strong></td>
+      <td>${s.host}:${s.port}</td>
+      <td>${s.user}</td>
+      <td>${statusBadge}</td>
+      <td>${lat}</td>
+      <td>${tags || '<span style="color:var(--muted)">—</span>'}</td>
+      <td>
+        <button class="btn btn-sm" onclick="showServerDetail('${s.id}')">Детали</button>
+        <button class="btn btn-sm" onclick="removeServer('${s.id}','${s.label}')" style="margin-left:4px;color:var(--red)">✕</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function showServerDetail(id) {
+  $('remote-detail').style.display = 'block';
+  $('detail-title').textContent = 'Загрузка…';
+  $('detail-body').textContent = 'Запрос…';
+  try {
+    const r = await fetch(`/api/v1/multiserver/servers/${id}/status`);
+    const d = await r.json();
+    $('detail-title').textContent = d.label || id;
+    $('detail-body').textContent = JSON.stringify(d, null, 2);
+  } catch(e) {
+    $('detail-body').textContent = 'Ошибка: ' + e.message;
+  }
+}
+
+async function removeServer(id, label) {
+  if (!confirm(`Удалить сервер «${label}»?`)) return;
+  const r = await fetch(`/api/v1/multiserver/servers/${id}`, {method:'DELETE'});
+  const d = await r.json();
+  if (d.ok) loadRemoteServers();
+  else alert('Ошибка: ' + (d.error || 'unknown'));
+}
+
+function addServerModal() {
+  $('modal-overlay').style.display = 'flex';
+}
+function closeModal() {
+  $('modal-overlay').style.display = 'none';
+  $('add-error').style.display = 'none';
+}
+
+async function submitAddServer() {
+  const label = $('add-label').value.trim();
+  const host = $('add-host').value.trim();
+  const port = parseInt($('add-port').value) || 22;
+  const user = $('add-user').value.trim() || 'root';
+  const desc = $('add-desc').value.trim();
+  const tags = $('add-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  if (!label || !host) { $('add-error').textContent='Имя и хост обязательны'; $('add-error').style.display='block'; return; }
+  const r = await fetch('/api/v1/multiserver/servers', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({label, host, port, user, description: desc, tags}),
+  });
+  const d = await r.json();
+  if (d.ok) { closeModal(); loadRemoteServers(); }
+  else { $('add-error').textContent = d.error || 'Ошибка'; $('add-error').style.display='block'; }
+}
+
+loadRemoteServers();
 </script>
 {% endblock %}

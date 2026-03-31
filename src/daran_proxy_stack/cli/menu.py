@@ -46,6 +46,7 @@ from daran_proxy_stack.cli.actions import xui as xui_actions
 from daran_proxy_stack.cli.actions import monitor as monitor_actions
 from daran_proxy_stack.cli.actions import backup as backup_actions
 from daran_proxy_stack.cli.actions import amneziawg as awg_actions
+from daran_proxy_stack.cli.actions import multiserver as ms_actions
 
 console = Console()
 
@@ -1222,6 +1223,113 @@ def _run_backup_submenu(input_fn: Callable[[], str]) -> None:
             console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
 
 
+def _run_multiserver_submenu(input_fn: Callable[[], str]) -> None:
+    """Подменю мульти-сервер — управление несколькими VPS."""
+    items = [
+        ("1", "Список серверов"),
+        ("2", "Пинг всех серверов  (TCP на SSH-порт)"),
+        ("3", "Статус сервера  (SSH диагностика)"),
+        ("4", "Добавить сервер"),
+        ("5", "Удалить сервер"),
+        ("6", "Выполнить команду на сервере  (SSH)"),
+        ("0", "← Назад"),
+    ]
+    while True:
+        _print_submenu("Мульти-сервер", items)
+        try:
+            choice = input_fn()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if choice == "1":
+            result = ms_actions.list_servers()
+            _show_action_result(result)
+
+        elif choice == "2":
+            console.print("\n[cyan]Пингую серверы…[/cyan]")
+            result = ms_actions.ping_all()
+            _show_action_result(result)
+
+        elif choice == "3":
+            list_res = ms_actions.list_servers()
+            _show_action_result(list_res)
+            server_id = _prompt("ID сервера", input_fn, "")
+            if server_id:
+                console.print("\n[cyan]Подключаюсь через SSH…[/cyan]")
+                result = ms_actions.server_status(server_id)
+                _show_action_result(result)
+
+        elif choice == "4":
+            console.print(Panel(
+                "Добавление сервера в реестр.\n"
+                "Требуется настроенный SSH-ключ для беспарольного доступа.",
+                title="Добавить сервер",
+                border_style="blue",
+                expand=False,
+            ))
+            label = _prompt("Название (например: Finland VPS)", input_fn, "")
+            if not label:
+                console.print("[dim]Отменено.[/dim]")
+                continue
+            host = _prompt("IP / хост", input_fn, "")
+            if not host:
+                console.print("[dim]Отменено.[/dim]")
+                continue
+            port_str = _prompt("SSH порт", input_fn, "22")
+            user = _prompt("SSH пользователь", input_fn, "root")
+            desc = _prompt("Описание (Enter — пропустить)", input_fn, "")
+            tags_str = _prompt("Теги через запятую (Enter — пропустить)", input_fn, "")
+            tags = [t.strip() for t in tags_str.split(",") if t.strip()]
+            try:
+                port = int(port_str)
+            except ValueError:
+                port = 22
+            preview = ms_actions.add_server(label, host, port, user, desc, tags, confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = ms_actions.add_server(label, host, port, user, desc, tags, confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "5":
+            list_res = ms_actions.list_servers()
+            _show_action_result(list_res)
+            server_id = _prompt("ID сервера для удаления", input_fn, "")
+            if server_id:
+                preview = ms_actions.remove_server(server_id, confirmed=False)
+                _show_action_result(preview)
+                if preview.ok and _ask_confirm(input_fn):
+                    result = ms_actions.remove_server(server_id, confirmed=True)
+                    _show_action_result(result)
+                else:
+                    console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "6":
+            list_res = ms_actions.list_servers()
+            _show_action_result(list_res)
+            server_id = _prompt("ID сервера", input_fn, "")
+            if not server_id:
+                console.print("[dim]Отменено.[/dim]")
+                continue
+            command = _prompt("Команда", input_fn, "")
+            if not command:
+                console.print("[dim]Отменено.[/dim]")
+                continue
+            preview = ms_actions.run_command(server_id, command, confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                result = ms_actions.run_command(server_id, command, confirmed=True)
+                _show_action_result(result)
+            else:
+                console.print("[dim]Отменено.[/dim]")
+
+        elif choice == "0":
+            break
+        else:
+            console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
+
+
 def _run_wizard(input_fn: Callable[[], str]) -> None:
     """Запустить мастер первого запуска."""
     from daran_proxy_stack.cli.actions.wizard import run_wizard
@@ -1312,6 +1420,7 @@ def _print_main_menu(state: ObservedState | None) -> None:
         ("5", "AmneziaWG", None),
         ("6", "Мониторинг", None),
         ("7", "Резервные копии", None),
+        ("8", "Мульти-сервер", None),
     ]
 
     for key, label, attr in modules_info:
@@ -1392,6 +1501,8 @@ def run_menu(
             _run_monitoring_submenu(_input)
         elif choice == "7":
             _run_backup_submenu(_input)
+        elif choice == "8":
+            _run_multiserver_submenu(_input)
         elif choice in ("w", "W", "в", "В"):
             _run_wizard(_input)
         elif choice in ("r", "R", "р", "Р"):  # латиница + кириллица
