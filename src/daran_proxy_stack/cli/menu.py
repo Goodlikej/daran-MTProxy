@@ -1390,7 +1390,8 @@ def _run_3xui_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
             preview = xui_actions.install_xui_pro_upstream(confirmed=False)
             _show_action_result(preview)
             if _ask_confirm(input_fn):
-                result = xui_actions.install_xui_pro_upstream(confirmed=True)
+                console.print("\n[bold cyan]Запускаю установщик x-ui-pro… (вывод в реальном времени)[/bold cyan]\n")
+                result = xui_actions.install_xui_pro_upstream(confirmed=True, console=console)
                 _show_action_result(result)
             else:
                 console.print("[dim]Отменено.[/dim]")

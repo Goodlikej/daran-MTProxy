@@ -30,7 +30,7 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from daran_proxy_stack.lib.shell import run
+from daran_proxy_stack.lib.shell import run, run_live
 
 
 @dataclass
@@ -207,7 +207,7 @@ def install_guide(confirmed: bool = False) -> ActionResult:
     )
 
 
-def install_xui_pro_upstream(confirmed: bool = False) -> ActionResult:
+def install_xui_pro_upstream(confirmed: bool = False, console=None) -> ActionResult:
     """Install 3x-ui via upstream mozaroc/x-ui-pro script.
 
     TEMPORARY external installer backend.
@@ -277,12 +277,16 @@ def install_xui_pro_upstream(confirmed: bool = False) -> ActionResult:
             "bash не найден в системе. Невозможно запустить установщик.",
         )
 
-    # Run via sudo su so the script gets a root shell (matches upstream docs)
-    r = run([
-        "sudo", "su", "-c",
-        f"bash <(wget -qO- {_XUI_PRO_UPSTREAM_SCRIPT_URL})"
-        " -install yes -panel 1 -ONLY_CF_IP_ALLOW no",
-    ])
+    # Download script and pipe to bash (avoids process substitution portability issues).
+    # run_live streams output line-by-line so the operator can see progress.
+    r = run_live(
+        [
+            "sudo", "bash", "-c",
+            f"wget -qO- {_XUI_PRO_UPSTREAM_SCRIPT_URL}"
+            " | bash -s -- -install yes -panel 1 -ONLY_CF_IP_ALLOW no",
+        ],
+        console=console,
+    )
 
     if r.ok:
         body = (
