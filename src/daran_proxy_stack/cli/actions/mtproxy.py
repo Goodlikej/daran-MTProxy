@@ -279,10 +279,140 @@ def install(port: int | None = None, confirmed: bool = False) -> ActionResult:
     # Run bootstrap script
     r = run(["bash", str(bootstrap_path)])
     if r.ok:
-        out = r.stdout[-3000:] if len(r.stdout) > 3000 else r.stdout
-        return ActionResult(True, "MTProxy: установка завершена", f"Установка выполнена успешно.\n\n{out}")
+        out = r.stdout[-2000:] if len(r.stdout) > 2000 else r.stdout
+
+        # Post-install: open firewall + verify port + get public IP
+        from daran_proxy_stack.lib import firewall
+        ufw_ok, ufw_msg = firewall.apply_ufw_rule(cfg.listen_port, "tcp")
+        port_up = firewall.check_port_listening(cfg.listen_port)
+        public_ip = firewall.get_public_ip() or "не определён"
+
+        checklist = [
+            "",
+            "─── Пост-установочная проверка ───",
+            f"  {'✓' if port_up else '⚠'} Сервис слушает порт {cfg.listen_port}:"
+            f" {'да' if port_up else 'нет — проверьте: systemctl status MTProxy'}",
+            f"  {'✓' if ufw_ok else '⚠'} Firewall: {ufw_msg}",
+            f"  🌐 Публичный IP сервера: {public_ip}",
+            "",
+            "  Следующий шаг: выберите [6] в меню MTProxy → получить tg-ссылку",
+        ]
+        return ActionResult(
+            True,
+            "MTProxy: установка завершена",
+            f"Установка выполнена успешно.\n\n{out}" + "\n".join(checklist),
+        )
     err = (r.stderr or r.stdout or "неизвестная ошибка")[-3000:]
     return ActionResult(False, "MTProxy: ошибка установки", f"Ошибка:\n{err}")
+
+
+def key_refresh(confirmed: bool = False) -> ActionResult:
+    """Download fresh proxy-secret + proxy-multi.conf from Telegram servers.
+
+    confirmed=False → preview only.
+    confirmed=True  → execute curl downloads + restart MTProxy.
+    """
+    if not confirmed:
+        return ActionResult(
+            True,
+            "MTProxy: обновление ключей",
+            "Будет выполнено:\n"
+            f"  curl -fsSL {mtp_mod.PROXY_SECRET_URL} → {mtp_mod.OFFICIAL_INSTALL_DIR}/proxy-secret\n"
+            f"  curl -fsSL {mtp_mod.PROXY_CONFIG_URL} → {mtp_mod.OFFICIAL_INSTALL_DIR}/proxy-multi.conf\n"
+            "  systemctl restart MTProxy\n\n"
+            "Telegram обновляет ключи периодически. Рекомендуется запускать раз в месяц.",
+            tip="Нажмите [y] для выполнения.",
+        )
+
+    ok, details = mtp_mod.refresh_official_keys()
+    # Restart service after key update
+    restart_msg = ""
+    r = run(["sudo", "systemctl", "restart", "MTProxy"])
+    if r.ok:
+        restart_msg = "\n  ✓ MTProxy перезапущен"
+    else:
+        restart_msg = f"\n  ⚠ MTProxy не перезапущен: {r.stderr or 'нет сервиса'}"
+
+    if ok:
+        return ActionResult(
+            True,
+            "MTProxy: ключи обновлены",
+            details + restart_msg,
+        )
+    return ActionResult(False, "MTProxy: ошибка обновления ключей", details + restart_msg)
+
+
+def setup_key_rotation(confirmed: bool = False) -> ActionResult:
+    """Install systemd timer for monthly automatic key rotation.
+
+    confirmed=False → preview + show generated unit files.
+    confirmed=True  → write service/timer to /etc/systemd/system/ and enable.
+    """
+    service_content = mtp_mod.render_key_refresh_service()
+    timer_content = mtp_mod.render_key_refresh_timer()
+    service_name = mtp_mod.KEY_REFRESH_SERVICE_NAME
+
+    if not confirmed:
+        return ActionResult(
+            True,
+            "MTProxy: автообновление ключей",
+            "Будет создано:\n"
+            f"  /etc/systemd/system/{service_name}.service\n"
+            f"  /etc/systemd/system/{service_name}.timer\n\n"
+            "Таймер запускается раз в месяц, обновляет proxy-secret и\n"
+            "proxy-multi.conf с серверов Telegram, затем перезапускает MTProxy.\n\n"
+            f"--- {service_name}.service ---\n{service_content}\n"
+            f"--- {service_name}.timer ---\n{timer_content}",
+            tip="Нажмите [y] для установки.",
+        )
+
+    steps: list[str] = []
+    service_path = f"/etc/systemd/system/{service_name}.service"
+    timer_path = f"/etc/systemd/system/{service_name}.timer"
+
+    # Write service file
+    r = run(["sudo", "bash", "-c", f"cat > {service_path} << 'ENDSVC'\n{service_content}\nENDSVC"])
+    if not r.ok:
+        # Fallback: use tee
+        import subprocess
+        p = subprocess.run(
+            ["sudo", "tee", service_path],
+            input=service_content,
+            text=True,
+            capture_output=True,
+        )
+        r_ok = p.returncode == 0
+    else:
+        r_ok = True
+    steps.append(f"  {'✓' if r_ok else '✗'} {service_path}")
+
+    # Write timer file
+    r2 = run(["sudo", "bash", "-c", f"cat > {timer_path} << 'ENDTMR'\n{timer_content}\nENDTMR"])
+    if not r2.ok:
+        import subprocess
+        p2 = subprocess.run(
+            ["sudo", "tee", timer_path],
+            input=timer_content,
+            text=True,
+            capture_output=True,
+        )
+        r2_ok = p2.returncode == 0
+    else:
+        r2_ok = True
+    steps.append(f"  {'✓' if r2_ok else '✗'} {timer_path}")
+
+    # Reload and enable timer
+    for cmd in [
+        ["sudo", "systemctl", "daemon-reload"],
+        ["sudo", "systemctl", "enable", "--now", f"{service_name}.timer"],
+    ]:
+        r3 = run(cmd)
+        steps.append(f"  {'✓' if r3.ok else '✗'} {' '.join(cmd[1:])}")
+
+    all_ok = r_ok and r2_ok
+    title = "MTProxy: таймер установлен" if all_ok else "MTProxy: ошибка установки таймера"
+    body = "\n".join(steps) + "\n\nПроверить: sudo systemctl list-timers | grep mtproxy"
+    return ActionResult(all_ok, title, body)
 
 
 def uninstall(confirmed: bool = False) -> ActionResult:
