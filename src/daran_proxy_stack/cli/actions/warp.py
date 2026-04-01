@@ -6,10 +6,14 @@ a bool `confirmed` parameter.
 """
 from __future__ import annotations
 
+import json as _json
 from dataclasses import dataclass
+from pathlib import Path
 
 from daran_proxy_stack.lib.models import WarpConfig
 from daran_proxy_stack.modules import warp as warp_mod
+
+_WARP_PORT_FILE = Path.home() / ".daran-proxy-stack" / "warp-port.json"
 
 
 @dataclass
@@ -21,7 +25,14 @@ class ActionResult:
 
 
 def default_config() -> WarpConfig:
-    return WarpConfig()
+    cfg = WarpConfig()
+    if _WARP_PORT_FILE.exists():
+        try:
+            data = _json.loads(_WARP_PORT_FILE.read_text(encoding="utf-8"))
+            cfg = cfg.model_copy(update={"socks_port": data.get("socks_port", cfg.socks_port)})
+        except Exception:
+            pass
+    return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -183,3 +194,69 @@ def uninstall(confirmed: bool = False) -> ActionResult:
         return ActionResult(False, "WARP: удаление не удалось", "\n".join(steps))
 
     return ActionResult(True, "WARP: удалён", "\n".join(steps))
+
+
+# ---------------------------------------------------------------------------
+# SOCKS5 settings actions
+# ---------------------------------------------------------------------------
+
+def xray_routing_info() -> ActionResult:
+    """Return Xray outbound JSON + routing rule example for 3X-UI."""
+    cfg = default_config()
+    outbound = warp_mod.render_xray_outbound(cfg)
+    routing = _json.dumps(
+        {
+            "type": "field",
+            "outboundTag": "warp-out",
+            "domain": ["geosite:openai", "geosite:netflix", "geosite:disney"],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    body = (
+        "── Outbound (вставить в раздел outbounds) ──\n\n"
+        f"{outbound}\n\n"
+        "── Routing rule (вставить в routing.rules) ──\n\n"
+        f"{routing}"
+    )
+    return ActionResult(True, "WARP: JSON для 3X-UI", body)
+
+
+def xui_integration_guide() -> ActionResult:
+    """Return step-by-step guide for connecting 3X-UI to WARP via SOCKS5."""
+    cfg = default_config()
+    socks = f"{cfg.socks_host}:{cfg.socks_port}"
+    body = (
+        f"SOCKS5-прокси: {socks}\n\n"
+        "ШАГ 1: Убедитесь что WARP подключён и SOCKS запущен\n"
+        "  Меню WARP → [5] Подключить → [7] SOCKS прокси включить\n\n"
+        "ШАГ 2: Откройте панель 3X-UI\n"
+        "  Settings → Xray Settings → вкладка Outbound\n"
+        "  Добавить новый outbound:\n"
+        "    Protocol: Socks\n"
+        f"    Address: {cfg.socks_host}   Port: {cfg.socks_port}\n"
+        "    Tag: warp-out\n\n"
+        "ШАГ 3: Settings → Xray Settings → вкладка Routing\n"
+        '  Добавить rule: outboundTag "warp-out"\n'
+        '  domain: ["geosite:openai","geosite:netflix","geosite:disney"]\n\n'
+        "ШАГ 4: Save → перезапустить Xray\n\n"
+        f"Схема: Клиент → 3X-UI → SOCKS5 ({socks}) → Cloudflare WARP → Интернет"
+    )
+    return ActionResult(True, "WARP: инструкция для 3X-UI", body)
+
+
+def set_socks_port(port: int, confirmed: bool = False) -> ActionResult:
+    """Change SOCKS5 port, persisted to ~/.daran-proxy-stack/warp-port.json."""
+    if not 1 <= port <= 65535:
+        return ActionResult(False, "WARP: порт SOCKS5", "Порт вне диапазона 1–65535")
+    cur = default_config().socks_port
+    if not confirmed:
+        return ActionResult(
+            False,
+            "WARP: изменить порт SOCKS5",
+            f"Сменить порт SOCKS5 с {cur} на {port}.\n"
+            "Текущий SOCKS прокси потребует перезапуска.",
+        )
+    _WARP_PORT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _WARP_PORT_FILE.write_text(_json.dumps({"socks_port": port}), encoding="utf-8")
+    return ActionResult(True, "WARP: порт SOCKS5", f"Порт сохранён: {port}\nПерезапустите SOCKS прокси.")
