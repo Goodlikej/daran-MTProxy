@@ -583,6 +583,42 @@ def _prompt(label: str, input_fn: Callable[[], str], default: str = "") -> str:
         return default
 
 
+_RELAY_PRESETS: dict[str, tuple[str, str, int]] = {
+    "1": ("AmneziaWG / WireGuard", "udp", 51820),
+    "2": ("VLESS / XRay",          "tcp", 443),
+    "3": ("TProxy / MTProto",      "tcp", 443),
+}
+
+
+def _show_cascade_instruction(input_fn: Callable[[], str], server_ip: str | None = None) -> None:
+    """Display the 3-step cascade setup instruction and wait for Enter."""
+    from daran_proxy_stack.lib.firewall import get_public_ip
+    ip = server_ip or get_public_ip() or "IP_ЭТОГО_СЕРВЕРА"
+    body = (
+        "[bold cyan]ШАГ 1: Подготовка[/bold cyan]\n"
+        "У вас должны быть данные от зарубежного сервера (VPN/Прокси и т.д.):\n"
+        " - [bold]IP адрес[/bold] (зарубежный)\n"
+        " - [bold]Порт[/bold] (на котором работает целевой сервис)\n\n"
+        "[bold cyan]ШАГ 2: Настройка этого сервера[/bold cyan]\n"
+        "1. Выберите нужный пункт (1-3 для стандартных или 4 для кастомных).\n"
+        "2. Введите IP и Порты (входящий и исходящий).\n"
+        "3. Скрипт создаст 'мост' через этот VPS.\n\n"
+        "[bold cyan]ШАГ 3: Настройка Клиента (Важно!)[/bold cyan]\n"
+        "1. Откройте приложение клиента.\n"
+        "2. В настройках соединения найдите поле [bold]Endpoint / Адрес сервера[/bold].\n"
+        f"3. Замените зарубежный IP на [bold green]{ip}[/bold green].\n"
+        "4. Если вы использовали разные порты в правиле №4, укажите Входящий порт.\n\n"
+        "Готово! Теперь трафик идёт: Клиент -> Этот Сервер -> Зарубеж."
+    )
+    console.print(Panel(body, title="ИНСТРУКЦИЯ: КАК НАСТРОИТЬ КАСКАД",
+                        border_style="red", expand=False))
+    console.print("\n[dim]Нажмите Enter, чтобы вернуться в меню...[/dim]")
+    try:
+        input_fn()
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
 def _run_cascade_add_rule(input_fn: Callable[[], str]) -> None:
     """Interactive flow: collect rule params, preview, confirm, write."""
     console.print(Panel(
@@ -661,46 +697,61 @@ def _run_cascade_remove_rule(input_fn: Callable[[], str]) -> None:
 
 
 def _run_cascade_relay_flow(input_fn: Callable[[], str]) -> None:
-    """Интерактивный сценарий настройки iptables relay: RU VPS → FI VPS."""
-    console.print(Panel(
-        "Прозрачный проброс трафика через iptables DNAT:\n\n"
-        "  Пользователь → этот VPS (RU) → целевой сервер (FI VPS)\n\n"
-        "  Трафик пробрасывается на сетевом уровне (L4), прозрачно.\n"
-        "  Подходит для 3x-ui (TCP), AmneziaWG (UDP), любого порта.",
-        title="Cascade: relay (iptables DNAT)",
-        border_style="blue",
-        expand=False,
-    ))
+    """Интерактивный сценарий настройки iptables relay с выбором пресета."""
+    lines = ["", "Выберите тип трафика:", ""]
+    for k, (name, proto, port) in _RELAY_PRESETS.items():
+        lines.append(f"  [{k}] {name}  ({proto.upper()}, порт {port})")
+    lines += ["  [4] Кастомное правило  (любой протокол/порт)", "  [0] Назад", ""]
+    console.print(Panel("\n".join(lines), title="Cascade: relay (iptables DNAT)",
+                        border_style="blue", expand=False))
 
-    # Шаг 1: IP целевого сервера
-    target_host = _prompt("IP целевого сервера (FI VPS)", input_fn, "")
-    if not target_host:
-        console.print("[dim]Отменено.[/dim]")
-        return
-
-    # Шаг 2: Порты
-    console.print("  [dim]Примеры: 443  /  443,8443  /  443,51820[/dim]")
-    ports_str = _prompt("Порты для проброса (через запятую)", input_fn, "443")
-    if not ports_str:
-        console.print("[dim]Отменено.[/dim]")
-        return
     try:
-        ports = [int(p.strip()) for p in ports_str.split(",") if p.strip()]
-        if not ports:
-            raise ValueError("empty")
-    except ValueError:
-        console.print("[red]Неверный формат портов.[/red]")
+        choice = input_fn()
+    except (EOFError, KeyboardInterrupt):
         return
 
-    # Шаг 3: Протокол
-    proto = _prompt("Протокол (tcp / udp / both)", input_fn, "tcp").lower().strip()
-    if proto not in ("tcp", "udp", "both"):
-        console.print(f"[red]Неверный протокол: {proto!r}. Допустимые: tcp, udp, both.[/red]")
+    if choice == "0":
         return
 
-    rules = [{"protocol": proto, "listen_port": p, "target_port": p} for p in ports]
+    if choice in _RELAY_PRESETS:
+        label, proto, default_port = _RELAY_PRESETS[choice]
+        target_host = _prompt("IP зарубежного сервера", input_fn, "")
+        if not target_host:
+            console.print("[dim]Отменено.[/dim]")
+            return
+        port_str = _prompt(f"Порт на целевом сервере (Enter = {default_port})",
+                           input_fn, str(default_port))
+        try:
+            port = int(port_str)
+        except ValueError:
+            console.print("[red]Неверный порт.[/red]")
+            return
+        rules = [{"protocol": proto, "listen_port": port, "target_port": port}]
 
-    # Предпросмотр + подтверждение
+    elif choice == "4":
+        target_host = _prompt("IP целевого сервера", input_fn, "")
+        if not target_host:
+            console.print("[dim]Отменено.[/dim]")
+            return
+        console.print("  [dim]Примеры: 443  /  443,8443  /  443,51820[/dim]")
+        ports_str = _prompt("Порты для проброса (через запятую)", input_fn, "443")
+        try:
+            ports = [int(p.strip()) for p in ports_str.split(",") if p.strip()]
+            if not ports:
+                raise ValueError
+        except ValueError:
+            console.print("[red]Неверный формат портов.[/red]")
+            return
+        proto = _prompt("Протокол (tcp / udp / both)", input_fn, "tcp").lower().strip()
+        if proto not in ("tcp", "udp", "both"):
+            console.print(f"[red]Неверный протокол: {proto!r}[/red]")
+            return
+        rules = [{"protocol": proto, "listen_port": p, "target_port": p} for p in ports]
+
+    else:
+        console.print("[red]Неверный выбор.[/red]")
+        return
+
     preview = cascade_actions.relay_setup(target_host, rules, confirmed=False)
     _show_action_result(preview)
 
@@ -711,6 +762,9 @@ def _run_cascade_relay_flow(input_fn: Callable[[], str]) -> None:
     console.print(f"\n[bold cyan]Применяю relay правила → {target_host}…[/bold cyan]")
     result = cascade_actions.relay_setup(target_host, rules, confirmed=True)
     _show_action_result(result)
+
+    if result.ok:
+        _show_cascade_instruction(input_fn)
 
 
 def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str]) -> None:
@@ -728,6 +782,7 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
         ("a", "Relay → FI VPS: настроить  (iptables DNAT)"),
         ("b", "Relay → FI VPS: статус"),
         ("c", "Relay → FI VPS: удалить правила  ⚠"),
+        ("i", "Инструкция (как настроить каскад)"),
         ("u", "Обновить данные"),
         ("0", "← Назад"),
     ]
@@ -804,6 +859,9 @@ def _run_cascade_submenu(state: ObservedState | None, input_fn: Callable[[], str
                 else:
                     console.print("[dim]Отменено.[/dim]")
 
+        elif choice in ("i", "I"):
+            _show_cascade_instruction(input_fn)
+
         elif choice in ("u", "U"):
             state = cmd_rediscover()
 
@@ -825,6 +883,7 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
         ("7", "SOCKS прокси: включить"),
         ("8", "SOCKS прокси: выключить"),
         ("9", "Показать Xray outbound JSON"),
+        ("s", "Настройки SOCKS5 / JSON / Инструкция для 3X-UI"),
         ("u", "Обновить данные"),
         ("0", "← Назад"),
     ]
@@ -910,9 +969,69 @@ def _run_warp_submenu(state: ObservedState | None, input_fn: Callable[[], str]) 
             result = warp_actions.xray_info()
             _show_action_result(result)
 
+        elif choice in ("s", "S"):
+            _run_warp_socks_settings(input_fn)
+
         elif choice in ("u", "U"):
             state = cmd_rediscover()
 
+        elif choice == "0":
+            break
+        else:
+            console.print(f"[red]Неизвестный выбор: {choice!r}[/red]")
+
+
+def _run_warp_socks_settings(input_fn: Callable[[], str]) -> None:
+    """SOCKS5 settings submenu: show endpoint/WARP IP, JSON, 3X-UI guide, port change."""
+    from daran_proxy_stack.modules import warp as warp_mod_local
+
+    while True:
+        cfg = warp_actions.default_config()
+        warp_ip = "—"
+        try:
+            diag = warp_mod_local.collect_diagnostics(cfg)
+            warp_ip = diag.server_ip or "—"
+        except Exception:
+            pass
+
+        items = [
+            ("1", "Показать JSON Outbound и Routing"),
+            ("2", "Пошаговая инструкция для 3X-UI"),
+            (f"3", f"Изменить порт SOCKS5  (сейчас: {cfg.socks_port})"),
+            ("0", "← Назад"),
+        ]
+        header = Text(
+            f"SOCKS5-прокси: {cfg.socks_host}:{cfg.socks_port}\n"
+            f"WARP IP:       {warp_ip}"
+        )
+        _print_submenu("WARP: настройки SOCKS5", items, status_line=header)
+
+        try:
+            choice = input_fn()
+        except (EOFError, KeyboardInterrupt):
+            break
+
+        if choice == "1":
+            _show_action_result(warp_actions.xray_routing_info())
+        elif choice == "2":
+            _show_action_result(warp_actions.xui_integration_guide())
+        elif choice == "3":
+            port_str = _prompt(
+                f"Новый порт SOCKS5 (сейчас {cfg.socks_port})",
+                input_fn,
+                str(cfg.socks_port),
+            )
+            try:
+                port = int(port_str)
+            except ValueError:
+                console.print("[red]Неверный порт.[/red]")
+                continue
+            preview = warp_actions.set_socks_port(port, confirmed=False)
+            _show_action_result(preview)
+            if _ask_confirm(input_fn):
+                _show_action_result(warp_actions.set_socks_port(port, confirmed=True))
+            else:
+                console.print("[dim]Отменено.[/dim]")
         elif choice == "0":
             break
         else:
