@@ -1,323 +1,276 @@
 # daran-proxy-stack
 
-**Terminal-first VPS management toolkit** for MTProxy (Telegram), Cloudflare WARP, 3x-ui/Xray, relay/cascade, AmneziaWG, and multi-server scenarios.
-
-The primary interface is a terminal menu over SSH. A web panel exists as a secondary, optional surface — protected by login/password.
+Инструментарий для управления прокси-стеком на VPS через терминал.  
+Устанавливает, настраивает и мониторит MTProxy, WARP, AmneziaWG, 3x-ui, каскадный relay — из одного интерактивного меню.
 
 ---
 
-## What this is
+## Что умеет
 
-A modular Python system that replaces ad-hoc bash scripts for managing a VPS proxy stack. Core principle: truthful observed state first, then install/manage actions on top of it.
-
-**Modules:**
-
-| Module | What it does |
+| Модуль | Возможности |
 |---|---|
-| **MTProxy** | Official Telegram MTProxy — systemd build, tg:// link + QR, secret key rotation timer |
-| **AmneziaWG** | AmneziaWG VPN — install, server config, peer management, obfuscation parameters |
-| **WARP** | Cloudflare WARP helper — install, connect, local SOCKS5 endpoint, Xray outbound JSON |
-| **3x-ui (xui)** | 3x-ui (Xray-based web panel) detection and service management |
-| **Cascade** | Port-forward relay rule manager — TCP/UDP rules, iptables DNAT, 3proxy config |
-| **Monitoring** | Telegram watchdog — systemd timer every 5 min, alert on service failure |
-| **Backup** | Archive config/state to tar.gz with manifest; restore with dry-run preview |
-| **Multi-server** | Manage multiple VPS from one panel — TCP ping, SSH diagnostics, remote commands |
-| **Discovery** | Truthful observed-state backend — detects what is actually installed and running |
+| **MTProxy** | Установка, управление сервисом, tg:// ссылка + QR-код, автообновление ключей (systemd-таймер) |
+| **AmneziaWG** | Установка, генерация серверного конфига с обфускацией (Jc/Jmin/Jmax/S1/S2/H1-H4), добавление/удаление пиров, клиентский конфиг + QR |
+| **WARP** | Установка Cloudflare WARP, подключение в режиме proxy (SSH не рвётся), SOCKS5-прокси для 3x-ui, JSON outbound для Xray |
+| **3x-ui** | Установка через upstream-скрипт, управление сервисом |
+| **Cascade** | Проброс портов через iptables DNAT (TCP, UDP, оба), правила сохраняются в JSON |
+| **Мониторинг** | Telegram watchdog — systemd-таймер каждые 5 минут, алерт если сервис упал |
+| **Backup** | Создание архива конфигов и состояния (tar.gz), восстановление с предпросмотром |
+| **Multi-server** | Управление несколькими VPS — TCP-пинг, SSH-диагностика, выполнение команд |
+| **Веб-панель** | FastAPI + JWT-авторизация, все модули видны в браузере |
 
 ---
 
-## Quick start
+## Установка
+
+### Требования
+- Ubuntu 22.04 / 24.04 (или Debian 11/12)
+- Python 3.12+
+- root или sudo
+
+### Шаги
 
 ```bash
-git clone <repo-url> daran-proxy-stack
+git clone https://github.com/Goodlikej/daran-MTProxy.git daran-proxy-stack
 cd daran-proxy-stack
 bash scripts/bootstrap.sh
 ```
 
-Bootstrap creates `.venv/`, installs the package in editable mode, and verifies the environment.
+Bootstrap создаёт `.venv/`, устанавливает зависимости, прогоняет тесты.  
+В конце выводит подсказку как запустить панель.
 
-### Interactive terminal menu
+---
+
+## Запуск
+
+### Терминальное меню (основное)
 
 ```bash
+cd daran-proxy-stack
 source .venv/bin/activate
 daran-net menu
 ```
 
-Menu structure:
+### Веб-панель
 
-```
-[1] MTProxy          — install, manage, key rotation
-[2] WARP             — install, connect, SOCKS5
-[3] 3x-ui            — install, service control
-[4] Cascade          — relay rules, iptables DNAT
-[5] AmneziaWG        — install, server config, peers
-[6] Backup           — create / restore / inspect archives
-[7] Monitoring       — Telegram watchdog setup
-[8] Multi-server     — add/ping/diagnose remote VPS
-[9] MTProxy key rotation — systemd timer for monthly refresh
-[w] First-run wizard — guided setup for new server
-```
+**Через SSH-туннель (безопасно, рекомендуется):**
 
-### Non-interactive discovery
-
+На своём компьютере:
 ```bash
-daran-net discover
+ssh -L 7331:127.0.0.1:7331 root@<IP-сервера>
+```
+Открываешь в браузере: `http://127.0.0.1:7331`
+
+**Напрямую (доступна снаружи):**
+```bash
+DARAN_PANEL_HOST=0.0.0.0 DARAN_PANEL_PORT=7331 bash scripts/run-panel.sh
+```
+Открываешь: `http://<IP-сервера>:7331`
+
+При первом входе — создай логин и пароль на странице `/setup`.
+
+---
+
+## Меню
+
+```
+[1] MTProxy          — установка, управление, ключи
+[2] WARP             — установка, подключение, SOCKS5 для 3X-UI
+[3] 3x-ui            — установка, управление сервисом
+[4] Cascade          — проброс портов через iptables
+[5] AmneziaWG        — установка, конфиг, управление пирами
+[6] Backup           — создать / посмотреть / восстановить архив
+[7] Мониторинг       — Telegram watchdog
+[8] Multi-server     — управление несколькими VPS
+[w] Мастер установки — пошаговая настройка с нуля
+[q] Выход
 ```
 
 ---
 
-## CLI entrypoints
+## MTProxy
 
-All commands are under `daran-net`.
+**Меню → `[1]`**
 
-### Global
-
-```bash
-daran-net version
-daran-net doctor
-daran-net discover        # run discovery, print observed state
-daran-net menu            # interactive terminal menu
-daran-net panel           # start web panel (default: http://127.0.0.1:7331)
+```
+[3] Установить       — сборка из исходников + systemd-сервис
+[6] Показать ссылку  — tg:// ссылка для Telegram
+[7] QR-код           — отображается прямо в терминале
+[8] Обновить ключи   — скачать свежие proxy-secret + перезапустить
+[9] Авто-обновление  — systemd-таймер раз в месяц
 ```
 
-### MTProxy
-
-```bash
-daran-net mtproxy status
-daran-net mtproxy suggest-ports
-daran-net mtproxy official-doctor --port 2053
-daran-net mtproxy bootstrap --port 2053 --stats-port 8889
-daran-net mtproxy official-install --port 2053 --stats-port 8889 --yes
-daran-net mtproxy tg-link --public-ip <YOUR_IP>
-daran-net mtproxy qr
-daran-net mtproxy key-refresh --yes       # download fresh proxy-secret + restart
-daran-net mtproxy setup-key-rotation --yes # install monthly systemd timer
-daran-net mtproxy uninstall --yes
-```
-
-### AmneziaWG
-
-```bash
-daran-net awg status
-daran-net awg install --yes
-daran-net awg generate-config --port 51820 --address 10.8.0.1/24 --yes
-daran-net awg apply-config --yes
-daran-net awg service-start --yes
-daran-net awg service-stop --yes
-daran-net awg service-restart --yes
-daran-net awg list-peers
-daran-net awg add-peer <name> --yes
-daran-net awg remove-peer <name> --yes
-daran-net awg show-client <name>   # print client config + QR
-```
-
-Generated client configs are saved to `~/.daran-proxy-stack/awg-generated/`.
-
-### WARP
-
-```bash
-daran-net warp status
-daran-net warp install
-daran-net warp connect
-daran-net warp socks-up
-daran-net warp socks-down
-daran-net warp xray-json
-daran-net warp uninstall --yes
-```
-
-### 3x-ui
-
-```bash
-daran-net xui status
-daran-net xui install
-daran-net xui install-pro --yes
-daran-net xui restart
-```
-
-### Cascade
-
-```bash
-daran-net cascade status
-daran-net cascade list-rules
-daran-net cascade managed-rules
-daran-net cascade add-rule tcp 443 1.2.3.4 443 --yes
-daran-net cascade remove-rule <rule-id> --yes
-daran-net cascade reset-rules --yes
-daran-net cascade apply --yes
-```
-
-### Backup
-
-```bash
-daran-net backup create --yes         # creates tar.gz archive
-daran-net backup list                 # list available backups
-daran-net backup inspect <path>       # show manifest + file list
-daran-net backup restore <path> --yes # restore (dry-run first without --yes)
-```
-
-Archives are saved to `~/.daran-proxy-stack/backups/` by default.
-Backed up: MTProxy secret/tg-link/service, cascade rules, relay state, AWG config, notify config.
-
-### Monitoring
-
-```bash
-daran-net monitor setup --bot-token <TOKEN> --chat-id <ID> --yes
-daran-net monitor test --bot-token <TOKEN> --chat-id <ID>
-daran-net monitor status
-```
-
-Installs a systemd timer (`daran-watchdog.timer`) that fires every 5 minutes, checks each monitored service, and sends a Telegram alert on failure.
-
-### Multi-server
-
-```bash
-daran-net servers list
-daran-net servers ping-all
-daran-net servers add --host 1.2.3.4 --label "VPS-DE" --user root --port 22
-daran-net servers remove <server-id> --yes
-daran-net servers status <server-id>    # SSH diagnostics
-daran-net servers run <server-id> "systemctl status MTProxy" --yes
-```
-
-Server registry is stored in `~/.daran-proxy-stack/servers.json`.
+После установки скопируй `tg://...` ссылку и отправь в чат,  
+или отсканируй QR-код с экрана телефоном.
 
 ---
 
-## Web panel
+## AmneziaWG
 
-Secondary surface — same observed state as terminal. Requires login on first access.
+**Меню → `[5]`**
 
-```bash
-# via run script (handles venv activation)
-bash scripts/run-panel.sh
+Порядок действий на новом сервере:
 
-# with options
-DARAN_PANEL_HOST=0.0.0.0 DARAN_PANEL_PORT=8080 bash scripts/run-panel.sh
-
-# dev mode
-DARAN_RELOAD=1 bash scripts/run-panel.sh
-
-# via CLI
-daran-net panel --host 127.0.0.1 --port 7331
+```
+[2] Установить           — через Ubuntu PPA (amnezia/amneziawg)
+[3] Сгенерировать конфиг — порт, подсеть, параметры обфускации
+[4] Применить конфиг     — скопировать в /etc/amneziawg/
+[5] Запустить сервис
+[8] Автозапуск           — включить при перезагрузке
+[a] Добавить пира        — введи имя, получишь конфиг и QR
+[c] Показать конфиг пира — QR-код для клиента AmneziaVPN
 ```
 
-Default: `http://127.0.0.1:7331`
+На телефоне: **AmneziaVPN → добавить конфиг → сканировать QR**.
 
-### Authentication
+---
 
-On first visit the panel redirects to `/setup` to create a username and password.
-Subsequent logins via `/login`. Sessions are stored as httponly cookies (7-day expiry).
+## WARP
 
-- Passwords hashed with PBKDF2-SHA256 (200 000 iterations, stdlib only)
-- Session tokens: HS256 JWT (stdlib `hmac` + `hashlib`, no external deps)
-- Credentials: `~/.daran-proxy-stack/auth-config.json` (chmod 600)
-- HMAC secret: `~/.daran-proxy-stack/panel-secret.key` (chmod 600)
+**Меню → `[2]`**
 
-### Panel pages
+```
+[3] Установить           — cloudflare-warp из APT-репозитория
+[5] Подключить           — set-mode proxy + connect (SSH не рвётся)
+[7] SOCKS5: включить     — запустить прокси на 127.0.0.1:40000
+[9] Xray outbound JSON   — скопировать в 3X-UI outbounds
+```
 
-| Path | Description |
+> WARP подключается в режиме **proxy** — таблица маршрутизации не меняется, SSH-сессия остаётся живой. Трафик через WARP идёт только через SOCKS5 `127.0.0.1:40000`.
+
+Для использования в 3X-UI: Outbounds → добавить запись → вставить JSON из пункта `[9]`.
+
+---
+
+## Cascade (проброс портов)
+
+**Меню → `[4]`**
+
+```
+[a] Настроить relay  — выбери протокол и порт, введи IP целевого сервера
+[b] Статус relay
+[c] Удалить правила
+[7] Добавить правило — произвольный протокол/порт
+[6] Список правил
+```
+
+Схема: **Клиент → Этот VPS → Целевой сервер**  
+Правила применяются через `iptables DNAT`, сохраняются в `rules.json`.
+
+---
+
+## Мониторинг (Telegram)
+
+**Меню → `[7]`**
+
+```
+[1] Настроить   — ввести токен бота и chat_id, выбрать сервисы
+[2] Тест        — отправить тестовое сообщение
+[3] Статус      — текущий конфиг и статус таймера
+```
+
+Как получить токен: @BotFather  
+Как получить chat_id: @userinfobot
+
+После настройки — watchdog проверяет сервисы каждые **5 минут** и шлёт алерт в Telegram если что-то упало.
+
+---
+
+## Backup
+
+**Меню → `[6]`**
+
+```
+[1] Создать бэкап    — архив .tar.gz в ~/.daran-proxy-stack/backups/
+[2] Список           — все архивы с датами
+[3] Содержимое       — посмотреть что внутри (без распаковки)
+[4] Восстановить     — сначала покажет diff, потом [1] для подтверждения
+```
+
+Сохраняется: конфиги MTProxy, AmneziaWG, правила Cascade, настройки мониторинга.
+
+---
+
+## Multi-server
+
+**Меню → `[8]`**
+
+```
+[3] Добавить сервер  — IP, SSH-порт, пользователь, метка
+[1] Список           — все серверы
+[2] Пинг всех        — TCP-пинг на SSH-порт
+[5] Диагностика      — SSH: uptime, сервисы, память
+[6] Выполнить команду
+```
+
+> Требует ключевую SSH-аутентификацию (не пароль). Добавь публичный ключ на удалённый сервер в `~/.ssh/authorized_keys`.
+
+---
+
+## Веб-панель — страницы
+
+| Адрес | Что показывает |
 |---|---|
-| `/` | Overview — observed state of all modules |
-| `/mtproxy` | MTProxy status, link, QR |
-| `/warp` | WARP status |
-| `/cascade` | Relay rules |
-| `/amneziawg` | AmneziaWG status, peers, diagnostics |
-| `/servers` | Multi-server — local + remote VPS overview |
-| `/login` | Login form |
-| `/setup` | First-run password setup |
-| `/logout` | End session |
+| `/` | Обзор — состояние всех модулей |
+| `/mtproxy` | MTProxy: статус, ссылка, QR |
+| `/warp` | WARP: статус, SOCKS5, JSON для Xray |
+| `/cascade` | Правила проброса |
+| `/amneziawg` | AmneziaWG: статус, пиры, диагностика |
+| `/servers` | Все серверы: локальный + удалённые |
+| `/api/docs` | Swagger — интерактивная документация API |
 
-### Panel REST API
+---
 
-```
-GET  /api/v1/status               — full observed state
-GET  /api/v1/mtproxy              — MTProxy diagnostics
-GET  /api/v1/amneziawg            — AWG diagnostics + peer list
-GET  /api/v1/multiserver/servers  — list registered servers
-POST /api/v1/multiserver/servers  — add server {host, port, user, label, description}
-DEL  /api/v1/multiserver/servers/{id} — remove server
-GET  /api/v1/multiserver/ping     — TCP ping all servers
-GET  /api/v1/multiserver/servers/{id}/status — SSH diagnostics for one server
-```
-
-### systemd service (panel)
+## Автозапуск панели через systemd
 
 ```bash
 REPO=/opt/daran-proxy-stack
-USER=ubuntu
+USER=ubuntu   # заменить на своего пользователя
+
 sed "s|%REPO_DIR%|$REPO|g; s|%RUN_USER%|$USER|g; s|%RUN_GROUP%|$USER|g" \
   deploy/daran-proxy-panel.service \
   | sudo tee /etc/systemd/system/daran-proxy-panel.service
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now daran-proxy-panel
 ```
 
 ---
 
-## Project layout
+## Структура проекта
 
-```text
+```
 src/daran_proxy_stack/
   cli/
-    actions/       Action functions: mtproxy, warp, cascade, amneziawg,
-                   backup, wizard, monitor, multiserver
-    menu.py        Interactive terminal menu (Rich)
-  discovery/       Observed-state backend + module detectors
-  modules/         Business logic: mtproxy, warp, cascade, amneziawg
-  lib/             Shared: config, models, executor, shell, paths,
-                   firewall, notify, backup, multiserver
+    actions/     — логика действий (mtproxy, warp, awg, cascade, backup, monitor, multiserver)
+    menu.py      — интерактивное терминальное меню
+  modules/       — бизнес-логика модулей
+  lib/           — общие утилиты: shell, firewall, backup, multiserver, notify
+  discovery/     — обнаружение установленного ПО
   web/
-    app.py         FastAPI app + auth routes (login/logout/setup)
-    api.py         REST API endpoints
-    auth.py        AuthManager — JWT + PBKDF2 password hashing
-    templates/     Jinja2 HTML templates (dark theme)
+    app.py       — FastAPI + авторизация (JWT)
+    api.py       — REST API
+    auth.py      — управление паролями и токенами
+    templates/   — HTML-шаблоны (тёмная тема)
 
-docs/              Architecture and product design specs
-deploy/            systemd service templates
-scripts/           bootstrap.sh, run-panel.sh
-tests/
+scripts/         — bootstrap.sh, run-panel.sh
+deploy/          — systemd-шаблон для панели
+tests/           — smoke-тесты (453 теста)
 ```
 
 ---
 
-## Stack
+## Зависимости
 
 - Python 3.12+
-- Typer + Rich (CLI/TUI)
-- Pydantic (config models)
-- PyYAML
-- FastAPI + Uvicorn + Jinja2 (web panel)
-- qrcode
-- No external crypto deps — JWT and password hashing use stdlib `hmac`/`hashlib`
+- Typer + Rich — CLI и TUI
+- Pydantic — модели конфигурации
+- FastAPI + Uvicorn + Jinja2 — веб-панель
+- qrcode — QR-коды в терминале
+- Без внешних крипто-библиотек — JWT и хэши паролей на stdlib (`hmac`, `hashlib`)
 
 ---
 
-## Current status
-
-**Works:**
-- Discovery backend (WARP, MTProxy, 3x-ui, Cascade, AmneziaWG)
-- Interactive terminal menu — all modules
-- MTProxy official-build + install/manage + monthly key rotation timer
-- AmneziaWG — install (Ubuntu PPA), server config with obfuscation params (Jc/Jmin/Jmax/S1/S2/H1-H4), peer add/remove, client config + QR
-- WARP install/connect/SOCKS management
-- 3x-ui install guide and service control
-- Cascade rule manager (rules.json → iptables DNAT + 3proxy config)
-- Telegram monitoring watchdog (systemd timer, per-service alerts)
-- Backup/restore with tar.gz archives and JSON manifest
-- First-run wizard (mode selection → MTProxy / Relay / Both → monitoring → backup)
-- Multi-server registry — TCP ping, SSH diagnostics, remote command execution
-- Web panel — all views, protected by JWT login session
-- Web panel REST API — status, MTProxy, AmneziaWG, multi-server CRUD
-
-**Notes:**
-- MTProxy: official Telegram source build is the preferred path. Docker image is marked outdated by upstream.
-- Tested on Ubuntu 24.04 alongside 3x-ui occupying common ports (443/8443). Alternate ports like 2053 are fully supported.
-- WARP: designed for use as an outbound transport for Xray/3x-ui.
-- AmneziaWG key generation: tries `awg genkey` → `wg genkey` → pure-Python Curve25519 RFC 7748 fallback.
-- Multi-server SSH uses `StrictHostKeyChecking=accept-new` and `BatchMode=yes` (key-based auth only).
-
----
-
-## License
+## Лицензия
 
 MIT
